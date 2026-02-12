@@ -18,6 +18,7 @@ ActionType = Literal[
 StageType = Literal["awareness", "consideration", "intent"]
 ConversationFlowStage = Literal[
     "greeting",
+    "discovery",
     "helping",
     "qualifying",
     "faq",
@@ -96,9 +97,14 @@ class ConversationState(BaseModel):
     active_topic: str = "general"
     topic_turns_remaining: int = 0
     slots: dict[str, Any] = Field(default_factory=dict)
+    asked_questions: list[str] = Field(default_factory=list)
     asked: list[str] = Field(default_factory=list)
     answered: list[str] = Field(default_factory=list)
     lead_score: int = 0
+    lead_fit: Literal["low", "med", "high"] = "low"
+    running_summary: str = ""
+    cta_last_shown_turn: int | None = None
+    cta_cooldown: int = 4
     cta: dict[str, Any] = Field(default_factory=dict)
     flags: dict[str, Any] = Field(default_factory=dict)
 

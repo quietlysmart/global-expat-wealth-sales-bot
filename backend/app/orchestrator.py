@@ -9,7 +9,6 @@ from typing import Any
 
 from .config import Settings
 from .db import Database
-from .dialog_manager import DialogManager
 from .kb import RetrievalResult, RetrievalService
 from .llm import OptionalLLM
 from .models import Action, ChatRequest, ChatResponse, Citation, ConversationState, ProspectProfile
@@ -202,7 +201,6 @@ class ChatOrchestrator:
         self.settings = settings
         self.playbook = Playbook(Path("playbooks/sales_playbook.json"))
         self.llm = OptionalLLM(settings)
-        self.dialog = DialogManager()
 
     def handle_chat(self, req: ChatRequest) -> ChatResponse:
         conversation_id = req.conversation_id or str(uuid.uuid4())
@@ -238,7 +236,7 @@ class ChatOrchestrator:
         just_bound_key = corrected_key or self._bind_answer_to_last_question(state, profile_after, req.message)
 
         self._update_profile_from_message(profile_after, req.message)
-        self.dialog.sync_qualifiers_from_profile(state, profile_after)
+        self._sync_qualifiers_from_profile(state, profile_after)
         self._update_extra_qualifiers(state, req.message)
         self._sync_answered_keys(state, profile_after)
         self._sync_state_slots_from_profile(state, profile_after)
@@ -246,7 +244,7 @@ class ChatOrchestrator:
             state.flags["user_wants_call"] = True
         self._update_active_topic(state, message_topic)
 
-        qualifier_count = self.dialog.qualifier_count(state)
+        qualifier_count = self._qualifier_count(state)
         state.stage = self._infer_stage(
             state=state,
             message_lower=message_lower,
@@ -296,11 +294,12 @@ class ChatOrchestrator:
             boundary_needed=boundary_needed,
         )
         llm_state = self._state_for_llm(state, profile_after)
-        plan = self.llm.generate_structured_turn(
-            message=req.message,
-            recent_messages=self.db.get_recent_messages(conversation_id),
+        recent_messages = self.db.get_recent_messages(conversation_id)
+        plan = self.llm.plan_turn(
+            user_message=req.message,
+            recent_messages=recent_messages,
+            state_snapshot=llm_state,
             retrieval_context=[r.text[:500] for r in retrieved],
-            state_json=llm_state,
             constraints=constraints,
         )
 
@@ -329,7 +328,7 @@ class ChatOrchestrator:
                 message_topic=message_topic,
             )
 
-        self._merge_model_state_update(state, profile_after, plan.get("state_update", {}))
+        self._merge_model_state_update(state, profile_after, plan)
         self._sync_answered_keys(state, profile_after)
         self._sync_state_slots_from_profile(state, profile_after)
 
@@ -397,15 +396,28 @@ class ChatOrchestrator:
         if question_line and include_soft_cta and not (explicit_intent or explicit_link_request):
             include_soft_cta = False
 
-        reply = self._render_reply(
+        approved_plan = self._build_approved_writer_plan(
             answer=answer,
             question_line=question_line,
             include_soft_cta=include_soft_cta,
             include_booking_link=include_booking_link,
-            user_message=req.message,
-            detail_requested=detail_requested,
             verbosity=verbosity,
             state=state,
+            req_message=req.message,
+        )
+        writer_reply = self.llm.write_turn(
+            approved_plan=approved_plan,
+            user_message=req.message,
+            recent_messages=recent_messages,
+        )
+        if not writer_reply:
+            writer_reply = self._fallback_write_turn(approved_plan)
+        reply = self._finalize_writer_message(
+            text=writer_reply,
+            include_booking_link=include_booking_link,
+            allow_expanded=verbosity == "expanded" or detail_requested,
+            expected_question=question_line,
+            user_message=req.message,
         )
 
         state.first_meaningful_value_delivered = (
@@ -422,6 +434,7 @@ class ChatOrchestrator:
         if include_booking_link:
             state.counters.hard_cta_last_shown_turn = next_turn
             state.counters.hard_cta_shown_count += 1
+            state.cta_last_shown_turn = next_turn
         if include_soft_cta:
             state.counters.soft_cta_last_shown_turn = next_turn
         if question_line:
@@ -429,6 +442,7 @@ class ChatOrchestrator:
             if question_slot:
                 state.last_question_key = question_slot
                 state.asked = (state.asked + [question_slot])[-25:]
+                state.asked_questions = (state.asked_questions + [question_slot])[-25:]
                 state.question_history = (state.question_history + [question_slot])[-25:]
         else:
             state.last_question_key = None
@@ -453,6 +467,12 @@ class ChatOrchestrator:
 
         if any(action.type == "draft_followup_email" for action in actions):
             reply = self._apply_email_followup_copy(reply=reply, demo_mode=req.demo_mode)
+
+        state.running_summary = self._update_running_summary(
+            previous=state.running_summary,
+            user_message=req.message,
+            assistant_reply=reply,
+        )
 
         self.db.save_profile(conversation_id, profile_after)
         self.db.save_conversation_state(conversation_id, state)
@@ -480,11 +500,54 @@ class ChatOrchestrator:
         }
         if not isinstance(state.slots, dict):
             state.slots = {}
+        if not isinstance(state.asked_questions, list):
+            state.asked_questions = []
         state.asked = list(state.asked or [])
         state.answered = list(state.answered or [])
         if not state.active_topic:
             state.active_topic = "general"
         state.topic_turns_remaining = max(0, int(state.topic_turns_remaining or 0))
+        state.lead_score = max(0, min(100, int(state.lead_score or 0)))
+        state.lead_fit = state.lead_fit if state.lead_fit in {"low", "med", "high"} else self._derive_lead_fit(state.lead_score)
+        state.running_summary = (state.running_summary or "").strip()[:500]
+        if state.cta_cooldown <= 0:
+            state.cta_cooldown = 4
+        state.cta_last_shown_turn = state.cta_last_shown_turn or state.counters.hard_cta_last_shown_turn
+
+    @staticmethod
+    def _sync_qualifiers_from_profile(state: ConversationState, profile: ProspectProfile) -> None:
+        q = state.qualifiers_collected
+        if profile.country_of_residence:
+            q.location_country = profile.country_of_residence
+        if profile.nationality:
+            q.nationality = profile.nationality
+        if profile.goals and not q.primary_goal:
+            q.primary_goal = profile.goals[0]
+        if profile.timeframe:
+            q.timeline = profile.timeframe
+        if profile.pension_interest and not q.assets_context:
+            q.assets_context = profile.pension_interest
+        if q.uk_pension is None and profile.pension_interest:
+            q.uk_pension = True
+
+    @staticmethod
+    def _qualifier_count(state: ConversationState) -> int:
+        q = state.qualifiers_collected
+        fields = [q.location_country, q.primary_goal, q.timeline]
+        return sum(1 for value in fields if bool(value))
+
+    @staticmethod
+    def _mark_question_answered(state: ConversationState, key: str) -> None:
+        state.answered_keys.add(key)
+        if state.last_question_key == key:
+            state.last_question_key = None
+        if key == "goal":
+            state.goal_unclear = False
+            state.flags["goal_unclear"] = False
+
+    @staticmethod
+    def _normalize_for_match(text: str) -> str:
+        return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9\s]", "", text.lower())).strip()
 
     def _sync_state_slots_from_profile(self, state: ConversationState, profile: ProspectProfile) -> None:
         slots = {
@@ -504,9 +567,14 @@ class ChatOrchestrator:
         return {
             "stage": state.stage,
             "slots": state.slots,
+            "asked_questions": state.asked_questions[-20:],
             "asked": state.asked[-20:],
             "answered": sorted(state.answered_keys),
             "lead_score": max(0, min(100, int(state.lead_score))),
+            "lead_fit": state.lead_fit,
+            "running_summary": state.running_summary,
+            "cta_last_shown_turn": state.cta_last_shown_turn,
+            "cta_cooldown": state.cta_cooldown,
             "cta": state.cta,
             "flags": state.flags,
             "active_topic": state.active_topic,
@@ -529,7 +597,43 @@ class ChatOrchestrator:
             "one_question_max": True,
             "active_topic": state.active_topic,
             "topic_turns_remaining": state.topic_turns_remaining,
+            "lead_score": state.lead_score,
+            "lead_fit": getattr(state, "lead_fit", "low"),
         }
+
+    @staticmethod
+    def _map_stage_for_external(stage: str) -> str:
+        mapping = {
+            "greeting": "greeting",
+            "helping": "discovery",
+            "qualifying": "qualifying",
+            "faq": "faq",
+            "objection": "objection",
+            "handoff": "closing",
+            "closing": "closing",
+            "ready_for_cta": "closing",
+        }
+        return mapping.get(stage, "discovery")
+
+    @staticmethod
+    def _map_stage_from_external(stage: str) -> str | None:
+        mapping = {
+            "greeting": "greeting",
+            "discovery": "helping",
+            "qualifying": "qualifying",
+            "faq": "faq",
+            "objection": "objection",
+            "closing": "closing",
+        }
+        return mapping.get(stage)
+
+    @staticmethod
+    def _derive_lead_fit(lead_score: int) -> str:
+        if lead_score >= 70:
+            return "high"
+        if lead_score >= 40:
+            return "med"
+        return "low"
 
     @staticmethod
     def _infer_stage(
@@ -570,45 +674,67 @@ class ChatOrchestrator:
         message_lower = message.lower().strip()
         missing_slots = [s for s in ["country", "goal", "timeline", "assets_context", "uk_pension"] if s not in state.answered_keys]
 
-        reply = "Thanks for sharing."
+        ack = "Thanks for sharing."
+        value_points: list[str] = []
         ask_obj: dict[str, str] | None = None
-        cta = "none"
+        cta_type = "none"
+        cta_reason = "not_ready"
         include_booking_link = False
         verbosity = "short"
         topic = message_topic if message_topic != "general" else state.active_topic
+        intent = "other"
+        slot_updates: dict[str, Any] = {}
+        notes_for_ui = {"email_send": False, "email_subject": "", "email_body": ""}
 
         if user_wants_call_signal:
-            reply = "Yes, absolutely. We can set that up now."
-            cta = "hard"
+            ack = "Yes, absolutely."
+            value_points = ["We can set that up now."]
+            cta_type = "hard"
+            cta_reason = "user_requested_call"
             include_booking_link = hard_cta_allowed
             topic = "booking"
+            intent = "booking"
         elif self._is_small_talk_opening(message_lower):
-            reply = "Hey, good to meet you."
+            ack = "Hey, good to meet you."
+            value_points = ["Happy to help with this."]
             ask_obj = {
                 "slot": "goal",
                 "question": "What are you thinking about - saving, retirement, or just getting organised?",
             }
             topic = "general"
+            intent = "greeting"
         elif objection:
-            reply = str(objection.get("response", "Fair point. We can work through this step by step."))
+            ack = "Fair point."
+            value_points = [str(objection.get("response", "We can work through this step by step."))]
+            intent = "objection"
         elif personal_advice_trigger:
-            reply = "I can share general guidance here. The key checks are fees, rules, and flexibility."
-            cta = "soft" if soft_cta_allowed else "none"
+            ack = "I can share general guidance here."
+            value_points = ["The key checks are fees, rules, and flexibility."]
+            cta_type = "soft" if soft_cta_allowed else "none"
+            cta_reason = "personal_recommendation_request"
+            intent = "faq"
         elif message_topic == "fees" or "cost" in message_lower or "fee" in message_lower:
-            reply = (
-                "Good question. Fees depend on the type of support and whether it's one-off or ongoing."
-                " Dan explains fees clearly before you decide anything."
-            )
+            ack = "Good question."
+            value_points = [
+                "Fees depend on the type of support and whether it's one-off or ongoing.",
+                "Dan explains fees clearly before you decide anything.",
+            ]
             verbosity = "expanded"
             topic = "fees"
+            intent = "faq"
             if not state.last_question_key and "goal" not in state.answered_keys:
                 ask_obj = {"slot": "goal", "question": "Is this for one-off help or ongoing support?"}
         elif just_bound_key:
-            reply = self._binding_confirmation_line(just_bound_key, profile) or "Thanks, that helps."
+            ack = self._binding_confirmation_line(just_bound_key, profile) or "Thanks, that helps."
+            value_points = ["We can build from that."]
+            intent = "qualify"
         elif retrieval_results:
-            reply = "Yes, we can help. We can break this into a few clear steps."
+            ack = "Yes, we can help."
+            value_points = ["We can break this into a few clear steps."]
+            intent = "faq"
         else:
-            reply = "Yes, we can help with that."
+            ack = "Yes, we can help with that."
+            value_points = ["We can take this one step at a time."]
 
         low_signal = self._is_low_signal_reply(message_lower)
         can_ask = (
@@ -625,63 +751,90 @@ class ChatOrchestrator:
             if topic == "fees" and slot == "timeline" and "retire" not in message_lower:
                 slot = "goal" if "goal" in missing_slots else slot
             ask_obj = {"slot": slot, "question": self._question_for_slot(slot, goal_unclear=state.goal_unclear)}
-        elif low_signal and not ask_obj and missing_slots and state.last_question_key in missing_slots:
+        elif (
+            low_signal
+            and not ask_obj
+            and missing_slots
+            and state.last_question_key in missing_slots
+            and not (
+                state.counters.question_last_shown_turn
+                and (state.counters.assistant_turn_count + 1 - state.counters.question_last_shown_turn) < 2
+            )
+        ):
             alternatives = [slot for slot in missing_slots if slot != state.last_question_key]
             if alternatives:
                 slot = alternatives[0]
                 ask_obj = {"slot": slot, "question": self._question_for_slot(slot, goal_unclear=state.goal_unclear)}
 
         if next_step_or_friction and soft_cta_allowed and not ask_obj:
-            cta = "soft"
+            cta_type = "soft"
+            cta_reason = "next_step_signal"
         elif state.flags.get("user_wants_call") and hard_cta_allowed:
-            cta = "hard"
+            cta_type = "hard"
+            cta_reason = "user_requested_call"
             include_booking_link = True
 
+        if ask_obj and ask_obj["slot"] == "email":
+            notes_for_ui["email_send"] = True
+            notes_for_ui["email_subject"] = "Global Expat Wealth follow-up"
+            notes_for_ui["email_body"] = "Thanks for the chat. Here are your next steps."
+
         return {
+            "intent": intent,
+            "ack": ack,
+            "value": value_points[:3],
+            "next_question": {
+                "key": ask_obj["slot"] if ask_obj else None,
+                "text": ask_obj["question"] if ask_obj else None,
+            },
+            "cta": {
+                "type": cta_type,
+                "reason": cta_reason,
+                "include_link": include_booking_link,
+            },
+            "slot_updates": slot_updates,
             "state_update": {
-                "stage": state.stage,
-                "slots": {},
-                "asked": [],
-                "answered": sorted(state.answered_keys),
+                "stage": self._map_stage_for_external(state.stage),
                 "lead_score": state.lead_score,
+                "lead_fit": self._derive_lead_fit(state.lead_score),
+                "running_summary": state.running_summary if hasattr(state, "running_summary") else "",
                 "active_topic": topic,
                 "topic_turns_remaining": state.topic_turns_remaining,
-                "flags": state.flags,
             },
-            "reply": reply,
-            "ask_question": bool(ask_obj),
-            "ask": ask_obj,
+            "notes_for_ui": notes_for_ui,
             "verbosity": verbosity,
             "topic": topic,
-            "cta": cta,
-            "include_booking_link": include_booking_link,
         }
 
-    def _merge_model_state_update(self, state: ConversationState, profile: ProspectProfile, state_update: dict[str, Any]) -> None:
-        if not isinstance(state_update, dict):
+    def _merge_model_state_update(self, state: ConversationState, profile: ProspectProfile, plan: dict[str, Any]) -> None:
+        if not isinstance(plan, dict):
             return
-        stage = state_update.get("stage")
-        if isinstance(stage, str) and stage in {
-            "greeting",
-            "helping",
-            "qualifying",
-            "faq",
-            "objection",
-            "handoff",
-            "closing",
-        }:
-            state.stage = stage
 
-        flags = state_update.get("flags")
-        if isinstance(flags, dict):
-            for key in ["goal_unclear", "user_wants_call", "compliance_boundary_needed"]:
-                if key in flags:
-                    state.flags[key] = bool(flags[key])
-            state.goal_unclear = bool(state.flags.get("goal_unclear", state.goal_unclear))
+        slot_updates = plan.get("slot_updates")
+        if isinstance(slot_updates, dict):
+            self._merge_slots_into_profile(state, profile, slot_updates)
+            state.slots.update(slot_updates)
+
+        state_update = plan.get("state_update")
+        if not isinstance(state_update, dict):
+            state_update = {}
+
+        stage = state_update.get("stage")
+        if isinstance(stage, str):
+            mapped_stage = self._map_stage_from_external(stage)
+            if mapped_stage:
+                state.stage = mapped_stage
 
         lead_score = state_update.get("lead_score")
         if isinstance(lead_score, (int, float)):
             state.lead_score = max(0, min(100, int(lead_score)))
+        lead_fit = state_update.get("lead_fit")
+        if isinstance(lead_fit, str) and lead_fit.lower() in {"low", "med", "high"}:
+            state.lead_fit = lead_fit.lower()
+        running_summary = state_update.get("running_summary")
+        if isinstance(running_summary, str) and running_summary.strip():
+            state.running_summary = running_summary.strip()[:500]
+
         active_topic = state_update.get("active_topic")
         if isinstance(active_topic, str) and active_topic in {"fees", "retirement", "insurance", "investing", "booking", "general"}:
             state.active_topic = active_topic
@@ -689,19 +842,11 @@ class ChatOrchestrator:
         if isinstance(topic_turns_remaining, (int, float)):
             state.topic_turns_remaining = max(0, min(3, int(topic_turns_remaining)))
 
-        slots = state_update.get("slots")
-        if isinstance(slots, dict):
-            state.slots.update(slots)
-            self._merge_slots_into_profile(state, profile, slots)
-
-        answered = state_update.get("answered")
-        if isinstance(answered, list):
-            for key in answered:
-                if isinstance(key, str):
-                    state.answered_keys.add(key)
-        asked = state_update.get("asked")
-        if isinstance(asked, list):
-            state.asked = [str(item) for item in asked if isinstance(item, str)][-25:]
+        next_question = plan.get("next_question")
+        if isinstance(next_question, dict):
+            asked_key = next_question.get("key")
+            if isinstance(asked_key, str) and asked_key and asked_key.lower() != "null":
+                state.asked = (state.asked + [asked_key])[-25:]
 
     def _merge_slots_into_profile(self, state: ConversationState, profile: ProspectProfile, slots: dict[str, Any]) -> None:
         if slots.get("country"):
@@ -723,8 +868,9 @@ class ChatOrchestrator:
         if slots.get("assets_context"):
             state.qualifiers_collected.assets_context = str(slots["assets_context"])
             state.answered_keys.add("assets_context")
-        if "uk_pension" in slots and slots.get("uk_pension") is not None:
-            state.qualifiers_collected.uk_pension = bool(slots.get("uk_pension"))
+        pension_key = "uk_pension_flag" if "uk_pension_flag" in slots else "uk_pension"
+        if pension_key in slots and slots.get(pension_key) is not None:
+            state.qualifiers_collected.uk_pension = bool(slots.get(pension_key))
             state.answered_keys.add("uk_pension")
         if slots.get("email"):
             profile.email = str(slots["email"]).strip()
@@ -743,38 +889,66 @@ class ChatOrchestrator:
         hard_cta_allowed: bool,
         soft_cta_allowed: bool,
     ) -> dict[str, Any]:
-        reply = self._strip_banned_prefix_lines(str(plan.get("reply", "")).strip())
+        ack = self._strip_banned_prefix_lines(str(plan.get("ack", "")).strip())
+        value_items = plan.get("value", [])
+        if not isinstance(value_items, list):
+            value_items = []
+        cleaned_value = [self._strip_banned_prefix_lines(str(v).strip()) for v in value_items if str(v).strip()]
+        body_parts = [part for part in [ack] + cleaned_value[:3] if part]
+        reply = "\n\n".join(body_parts).strip()
         if not reply:
             reply = "Thanks for your message. We can work through this step by step."
 
         ask_slot = None
         question_line = None
-        ask_question = bool(plan.get("ask_question", False))
-        ask_obj = plan.get("ask")
-        if isinstance(ask_obj, dict):
-            slot_raw = ask_obj.get("slot")
+        ask_question = False
+        next_question = plan.get("next_question")
+        if isinstance(next_question, dict):
+            slot_raw = next_question.get("key")
             if isinstance(slot_raw, str):
                 ask_slot = slot_raw.strip().lower()
-            q_raw = ask_obj.get("question")
+                if ask_slot in {"null", "none", ""}:
+                    ask_slot = None
+            q_raw = next_question.get("text")
             if isinstance(q_raw, str):
                 question_line = self._strip_banned_prefix_lines(q_raw.strip())
-                ask_question = True
+            ask_question = bool(ask_slot or question_line)
 
         if not ask_question:
             ask_slot, question_line = None, None
+        if self._is_small_talk_opening(req_message.lower().strip()) and not ask_slot:
+            ask_slot = "goal"
+            question_line = "What are you thinking about - saving, retirement, or just getting organised?"
         if ask_slot and ask_slot in state.answered_keys and not self._has_correction_signal(req_message):
             ask_slot, question_line = None, None
         if ask_slot and ask_slot == state.last_question_key and not self._has_correction_signal(req_message):
             ask_slot, question_line = None, None
         if ask_slot and not question_line:
             question_line = self._question_for_slot(ask_slot, goal_unclear=state.goal_unclear)
+        if self._is_small_talk_opening(req_message.lower().strip()) and ask_slot == "country":
+            ask_slot = "goal"
+            question_line = "What are you thinking about - saving, retirement, or just getting organised?"
+        question_recent = (
+            state.counters.question_last_shown_turn is not None
+            and ((state.counters.assistant_turn_count + 1) - state.counters.question_last_shown_turn) < 2
+        )
+        if question_recent and question_line and not self._has_correction_signal(req_message):
+            ask_slot, question_line = None, None
         if message_topic == "fees" and question_line and "timeline" in question_line.lower() and "retire" not in req_message.lower():
             ask_slot, question_line = None, None
 
-        cta = str(plan.get("cta", "none")).lower().strip()
-        if cta not in {"none", "soft", "hard"}:
-            cta = "none"
-        include_booking_link = bool(plan.get("include_booking_link", False))
+        if self._is_small_talk_opening(req_message.lower().strip()) and reply.count(",") >= 3:
+            reply = "Hey, good to meet you.\n\nHappy to help with this."
+
+        cta = plan.get("cta")
+        cta_type = "none"
+        include_booking_link = False
+        if isinstance(cta, dict):
+            cta_type = str(cta.get("type", "none")).lower().strip()
+            include_booking_link = bool(cta.get("include_link", False))
+        if cta_type not in {"none", "soft", "hard"}:
+            cta_type = "none"
+
         verbosity = str(plan.get("verbosity", "short")).lower().strip()
         if verbosity not in {"short", "expanded"}:
             verbosity = "short"
@@ -787,20 +961,20 @@ class ChatOrchestrator:
             topic = message_topic
 
         if user_wants_call_signal or state.flags.get("user_wants_call"):
-            cta = "hard"
+            cta_type = "hard"
             include_booking_link = True
             ask_slot, question_line = None, None
 
-        if cta == "hard":
+        if cta_type == "hard":
             include_booking_link = include_booking_link or explicit_intent or explicit_link_request
         if include_booking_link and not hard_cta_allowed:
             include_booking_link = False
-            if cta == "hard":
-                cta = "soft" if soft_cta_allowed else "none"
+            if cta_type == "hard":
+                cta_type = "soft" if soft_cta_allowed else "none"
 
-        if cta == "soft" and not soft_cta_allowed:
-            cta = "none"
-        soft_cta = cta == "soft"
+        if cta_type == "soft" and not soft_cta_allowed:
+            cta_type = "none"
+        soft_cta = cta_type == "soft"
         if soft_cta and question_line and not (explicit_intent or explicit_link_request):
             soft_cta = False
         if include_booking_link:
@@ -818,6 +992,77 @@ class ChatOrchestrator:
             "verbosity": verbosity,
             "topic": topic,
         }
+
+    def _build_approved_writer_plan(
+        self,
+        answer: str,
+        question_line: str | None,
+        include_soft_cta: bool,
+        include_booking_link: bool,
+        verbosity: str,
+        state: ConversationState,
+        req_message: str,
+    ) -> dict[str, Any]:
+        return {
+            "answer": answer.strip(),
+            "question": question_line,
+            "soft_cta": include_soft_cta,
+            "hard_cta": include_booking_link,
+            "booking_link": self.settings.default_calendly_link if include_booking_link else "",
+            "verbosity": verbosity,
+            "active_topic": state.active_topic,
+            "user_message": req_message,
+        }
+
+    def _fallback_write_turn(self, approved_plan: dict[str, Any]) -> str:
+        blocks: list[str] = []
+        answer = str(approved_plan.get("answer", "")).strip()
+        question = approved_plan.get("question")
+        soft_cta = bool(approved_plan.get("soft_cta", False))
+        hard_cta = bool(approved_plan.get("hard_cta", False))
+        booking_link = str(approved_plan.get("booking_link", "")).strip()
+
+        if answer:
+            blocks.append(answer)
+        if question:
+            blocks.append(str(question).strip())
+        if soft_cta:
+            blocks.append("If helpful, Dan can walk through your options on a quick call.")
+        if hard_cta and booking_link:
+            blocks.append(f"Book a time with Dan: {booking_link}")
+        return "\n\n".join(blocks).strip()
+
+    def _finalize_writer_message(
+        self,
+        text: str,
+        include_booking_link: bool,
+        allow_expanded: bool,
+        expected_question: str | None,
+        user_message: str,
+    ) -> str:
+        out = self._strip_banned_prefix_lines((text or "").strip())
+        if not out:
+            out = "Thanks for your message. We can work through this step by step."
+
+        if expected_question:
+            out = self._strip_extra_questions(out)
+            if "?" not in out:
+                out = f"{out}\n\n{self._normalize_question_sentence(expected_question)}"
+        else:
+            # Planner decided no question this turn.
+            out = out.replace("?", ".")
+        if not include_booking_link:
+            out = self._strip_booking_links(out)
+
+        if self._is_small_talk_opening(user_message.lower().strip()) and "where do you live right now?" in out.lower():
+            out = out.replace("Where do you live right now?", "What are you thinking about - saving, retirement, or just getting organised?")
+
+        out = re.sub(r"\n{3,}", "\n\n", out).strip()
+        if "\n" in out and "\n\n" not in out:
+            out = out.replace("\n", "\n\n")
+        if self._word_count(out) > 140 and not allow_expanded:
+            out = self._trim_for_length(out)
+        return out.strip()
 
     @staticmethod
     def _strip_extra_questions(text: str) -> str:
@@ -908,6 +1153,15 @@ class ChatOrchestrator:
             "confused",
         ]
         return any(marker in message_lower for marker in markers)
+
+    @staticmethod
+    def _update_running_summary(previous: str, user_message: str, assistant_reply: str) -> str:
+        user_short = re.sub(r"\s+", " ", user_message.strip())[:120]
+        assistant_short = re.sub(r"\s+", " ", assistant_reply.strip())[:180]
+        parts = [p for p in [previous.strip(), f"User: {user_short}", f"Assistant: {assistant_short}"] if p]
+        merged = " ".join(parts)
+        sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", merged) if s.strip()]
+        return " ".join(sentences[-3:])[:500]
 
     @staticmethod
     def _question_for_slot(slot: str, goal_unclear: bool = False) -> str:
@@ -1128,7 +1382,7 @@ class ChatOrchestrator:
             if self._is_short_answer(text) and self._looks_like_country_only_reply(text):
                 profile.country_of_residence = _clean(text).title()
                 state.qualifiers_collected.location_country = profile.country_of_residence
-                self.dialog.mark_question_answered(state, "country")
+                self._mark_question_answered(state, "country")
                 return "country"
 
         if key == "timeline":
@@ -1138,13 +1392,13 @@ class ChatOrchestrator:
                 value = f"{years} years"
                 profile.timeframe = value
                 state.qualifiers_collected.timeline = value
-                self.dialog.mark_question_answered(state, "timeline")
+                self._mark_question_answered(state, "timeline")
                 return "timeline"
             for hint, value in TIMELINE_HINTS.items():
                 if hint in lower or hint in normalized:
                     profile.timeframe = value
                     state.qualifiers_collected.timeline = value
-                    self.dialog.mark_question_answered(state, "timeline")
+                    self._mark_question_answered(state, "timeline")
                     return "timeline"
 
         if key == "goal":
@@ -1158,7 +1412,7 @@ class ChatOrchestrator:
             if mapped_goal:
                 self._set_goal(profile, mapped_goal)
                 state.qualifiers_collected.primary_goal = mapped_goal
-                self.dialog.mark_question_answered(state, "goal")
+                self._mark_question_answered(state, "goal")
                 return "goal"
 
         if key == "assets_context":
@@ -1166,19 +1420,19 @@ class ChatOrchestrator:
                 state.qualifiers_collected.assets_context = "UK pension"
                 state.qualifiers_collected.uk_pension = True
                 profile.pension_interest = profile.pension_interest or "Has pension questions"
-                self.dialog.mark_question_answered(state, "assets_context")
+                self._mark_question_answered(state, "assets_context")
                 return "assets_context"
             if "from scratch" in lower:
                 state.qualifiers_collected.assets_context = "Starting from scratch"
-                self.dialog.mark_question_answered(state, "assets_context")
+                self._mark_question_answered(state, "assets_context")
                 return "assets_context"
             if "lump sum" in lower:
                 state.qualifiers_collected.assets_context = "Lump sum"
-                self.dialog.mark_question_answered(state, "assets_context")
+                self._mark_question_answered(state, "assets_context")
                 return "assets_context"
             if "savings" in lower or "portfolio" in lower:
                 state.qualifiers_collected.assets_context = "Existing savings/portfolio"
-                self.dialog.mark_question_answered(state, "assets_context")
+                self._mark_question_answered(state, "assets_context")
                 return "assets_context"
 
         if key == "uk_pension":
@@ -1186,11 +1440,11 @@ class ChatOrchestrator:
                 state.qualifiers_collected.uk_pension = True
                 state.qualifiers_collected.assets_context = state.qualifiers_collected.assets_context or "UK pension"
                 profile.pension_interest = profile.pension_interest or "Has pension questions"
-                self.dialog.mark_question_answered(state, "uk_pension")
+                self._mark_question_answered(state, "uk_pension")
                 return "uk_pension"
             if any(token in lower for token in ["no", "none", "not really"]):
                 state.qualifiers_collected.uk_pension = False
-                self.dialog.mark_question_answered(state, "uk_pension")
+                self._mark_question_answered(state, "uk_pension")
                 return "uk_pension"
 
         return None
@@ -1219,7 +1473,7 @@ class ChatOrchestrator:
         if mapped_goal:
             self._set_goal(profile, mapped_goal)
             state.qualifiers_collected.primary_goal = mapped_goal
-            self.dialog.mark_question_answered(state, "goal")
+            self._mark_question_answered(state, "goal")
             return "goal"
 
         state.goal_unclear = True
@@ -1309,6 +1563,7 @@ class ChatOrchestrator:
             state.answered_keys.add("goal")
         state.answered = sorted(state.answered_keys)
         state.flags["goal_unclear"] = bool(state.goal_unclear)
+        state.lead_fit = ChatOrchestrator._derive_lead_fit(state.lead_score)
 
     @staticmethod
     def _binding_confirmation_line(bound_key: str, profile: ProspectProfile) -> str:
@@ -1435,8 +1690,9 @@ class ChatOrchestrator:
         if explicit_link_request:
             return True
 
-        last = state.counters.hard_cta_last_shown_turn
-        if last is not None and (next_turn - last) <= 4:
+        last = state.cta_last_shown_turn if state.cta_last_shown_turn is not None else state.counters.hard_cta_last_shown_turn
+        cooldown = max(4, int(state.cta_cooldown or 4))
+        if last is not None and (next_turn - last) <= cooldown:
             return False
 
         if next_turn < 12 and state.counters.hard_cta_shown_count >= 2:
@@ -1481,7 +1737,7 @@ class ChatOrchestrator:
         if not question_key:
             return None
         if question_key != "goal" or not state.goal_unclear:
-            return self.dialog.render_question(question_key, prefix_style)
+            return self._question_for_slot(question_key, goal_unclear=False)
 
         base = GOAL_TRIAGE_QUESTION.rstrip("?")
         if prefix_style == "one_thing_first":
@@ -1859,11 +2115,11 @@ class ChatOrchestrator:
         return "\n".join(line for line in kept if line).strip()
 
     def _drop_repeated_answer_sentences(self, answer: str, state: ConversationState) -> str:
-        prior = {self.dialog.normalize_for_match(s) for s in state.recent_assistant_sentences}
+        prior = {self._normalize_for_match(s) for s in state.recent_assistant_sentences}
         sentences = self._split_sentences(answer)
         kept: list[str] = []
         for sentence in sentences:
-            norm = self.dialog.normalize_for_match(sentence)
+            norm = self._normalize_for_match(sentence)
             if norm and norm in prior:
                 continue
             kept.append(sentence)
@@ -1882,7 +2138,7 @@ class ChatOrchestrator:
         out: list[str] = []
         seen: set[str] = set()
         for sentence in merged:
-            norm = self.dialog.normalize_for_match(sentence)
+            norm = self._normalize_for_match(sentence)
             if not norm or norm in seen:
                 continue
             seen.add(norm)

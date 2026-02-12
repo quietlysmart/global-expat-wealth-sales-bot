@@ -5,11 +5,11 @@ Channel-agnostic backend chatbot + demo web page for lead capture, objection han
 ## What this MVP includes
 
 - `FastAPI` backend with `POST /api/chat` for web, WhatsApp, or email channels.
-- LLM-first conversation architecture with backend guardrails:
-  - Model returns structured JSON turn output (`state_update`, `reply`, optional `ask`, `cta`, `include_booking_link`)
-  - Backend persists state JSON per conversation and uses it on the next turn
-  - Backend acts as referee: compliance, CTA gate/cooldown, max one question, no repeated answered-slot questions
-  - Lightweight output repair strips banned robotic prefixes and extra questions without replacing the full response
+- Planner -> Referee -> Writer architecture:
+  - **Planner (LLM step 1)** returns strict JSON (`intent`, `ack`, `value`, `next_question`, `cta`, `slot_updates`, `state_update`, `verbosity`)
+  - **Referee (backend)** validates guardrails only (max one question, no re-asking filled slots, CTA gating/cooldown, compliance boundary)
+  - **Writer (LLM step 2)** generates final natural chat message from the approved plan
+  - Backend stores state server-side and feeds it back each turn (`slots`, `stage`, `lead_score`, `lead_fit`, `running_summary`, topic state)
 - Local persistence via SQLite (`data/sales_concierge.db`).
 - Local vector-style retrieval store (hashed sparse embeddings in SQLite).
 - RAG ingestion pipeline for:
@@ -59,7 +59,7 @@ Channel-agnostic backend chatbot + demo web page for lead capture, objection han
 
 - `backend/app/main.py` API app and routes
 - `backend/app/orchestrator.py` chatbot policy logic and action generation
-- `backend/app/dialog_manager.py` session state + question selection logic
+- `backend/app/dialog_manager.py` legacy helpers (no longer primary flow controller)
 - `backend/app/kb.py` ingestion + retrieval
 - `backend/app/db.py` SQLite schema and data access
 - `playbooks/sales_playbook.json` internal sales policy pack
@@ -87,6 +87,7 @@ Add your OpenAI key in `.env` for live AI inference:
 ```bash
 OPENAI_API_KEY=your_key_here
 USE_OPENAI_CHAT=true
+OPENAI_MODEL=gpt-5-mini
 ```
 
 2. Ingest the provided services PDF:
@@ -230,6 +231,12 @@ Run LLM-driven conversation architecture regression tests:
 pytest -q tests/test_llm_driven_conversation_architecture.py
 ```
 
+Run planner/writer transcript regressions (includes `whats up?` and `money lol` paths):
+
+```bash
+pytest -q tests/test_planner_writer_regressions.py
+```
+
 Run interactive scripted demo conversation against live API:
 
 ```bash
@@ -245,13 +252,20 @@ Covers:
 
 ## Demo-mode behavior
 
-All integrations are simulated:
+Demo mode simulates follow-up actions as completed so the chat feels realistic:
 
-- No emails are sent.
-- No meetings are booked.
-- No WhatsApp messages are sent.
+- Email follow-up is phrased as sent in chat.
+- Booking actions are phrased as scheduled/arranged in chat.
+- Internal action objects still capture status for debugging.
 
-The assistant language and action payloads explicitly indicate **prepared/drafted, not sent**.
+## Conversation Tuning
+
+Key tuning points:
+
+- CTA gating + cooldown: `/Users/unclematty/Library/Mobile Documents/com~apple~CloudDocs/A.I./Dan Whiting Wealth/sales bot/backend/app/orchestrator.py` in `_hard_cta_reason`, `_passes_hard_cta_limits`, `_should_show_soft_cta`
+- Question strategy / no-repeat checks: `/Users/unclematty/Library/Mobile Documents/com~apple~CloudDocs/A.I./Dan Whiting Wealth/sales bot/backend/app/orchestrator.py` in `_repair_plan_output`
+- Topic override (fees, retirement, etc.): `/Users/unclematty/Library/Mobile Documents/com~apple~CloudDocs/A.I./Dan Whiting Wealth/sales bot/backend/app/orchestrator.py` in `_detect_topic`, `_update_active_topic`
+- Planner and writer prompts / model: `/Users/unclematty/Library/Mobile Documents/com~apple~CloudDocs/A.I./Dan Whiting Wealth/sales bot/backend/app/llm.py`
 
 ## Optional: research mode helper
 

@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from typing import Any
 
 from openai import OpenAI
 
 from .config import Settings
+
+logger = logging.getLogger(__name__)
 
 
 class OptionalLLM:
@@ -27,265 +30,187 @@ class OptionalLLM:
         self.client = OpenAI(api_key=settings.openai_api_key)
         self.enabled = True
 
-    def generate_dialog_plan(
+    def plan_turn(
         self,
-        message: str,
+        user_message: str,
         recent_messages: list[dict[str, Any]],
+        state_snapshot: dict[str, Any],
         retrieval_context: list[str],
-        allowed_question_keys: list[str],
-        cta_gate_open: bool,
-        soft_cta_allowed: bool,
-        boundary_needed: bool,
-        default_ask_question: bool,
-        default_prefix_style: str,
-    ) -> dict[str, Any] | None:
-        if not self.enabled or not self.client:
-            return None
-
-    def generate_structured_turn(
-        self,
-        message: str,
-        recent_messages: list[dict[str, Any]],
-        retrieval_context: list[str],
-        state_json: dict[str, Any],
         constraints: dict[str, Any],
     ) -> dict[str, Any] | None:
         if not self.enabled or not self.client:
-            return None
-
-        conversation_text = "\n".join(f"{m['role']}: {m['content']}" for m in recent_messages[-10:])
-        context_text = "\n---\n".join(retrieval_context[:3])
-        state_blob = json.dumps(state_json, ensure_ascii=False)
-        constraint_blob = json.dumps(constraints, ensure_ascii=False)
-
-        instructions = (
-            "You are a compliant assistant for Global Expat Wealth. Return strict JSON only.\n"
-            "Voice:\n"
-            "- Human, calm, simple English, short sentences.\n"
-            "- Respond to the user's latest message first.\n"
-            "- Avoid robotic framing and repeated templates.\n"
-            "- Never use: 'One thing first', 'Just so I don't assume', 'To make this useful'.\n"
-            "Format:\n"
-            "- reply should be 2-6 short lines with blank lines between ideas.\n"
-            "- ask.question is optional and should be one natural question at most.\n"
-            "- ask_question must be true only when ask is present.\n"
-            "- set verbosity=expanded for explain/overview/how-it-works/fees/confused/next-steps requests.\n"
-            "- cta must be one of: none, soft, hard.\n"
-            "- include_booking_link true only when hard CTA is intended.\n"
-            "Compliance:\n"
-            "- No personalized investment advice.\n"
-            "- If user asks personal recommendation, add a short boundary sentence once.\n"
-        )
-
-        prompt = f"""
-User message:
-{message}
-
-Recent conversation:
-{conversation_text}
-
-Retrieved context:
-{context_text}
-
-Current state JSON:
-{state_blob}
-
-Constraints JSON:
-{constraint_blob}
-
-Return JSON with exactly this shape:
-{{
-  "state_update": {{
-    "stage": "greeting|helping|qualifying|faq|objection|handoff|closing",
-    "slots": {{
-      "country": null,
-      "goal": null,
-      "timeline": null,
-      "assets_context": null,
-      "uk_pension": null,
-      "email": null,
-      "name": null
-    }},
-    "asked": [],
-    "answered": [],
-    "lead_score": 0,
-    "active_topic": "fees|retirement|insurance|investing|booking|general",
-    "topic_turns_remaining": 0,
-    "flags": {{
-      "goal_unclear": false,
-      "user_wants_call": false,
-      "compliance_boundary_needed": false
-    }}
-  }},
-  "reply": "...",
-  "ask_question": false,
-  "ask": {{"slot":"country|goal|timeline|assets_context|uk_pension|email|name","question":"..."}} or null,
-  "verbosity": "short|expanded",
-  "topic": "fees|retirement|insurance|investing|booking|general",
-  "cta": "none|soft|hard",
-  "include_booking_link": false
-}}
-"""
-        try:
-            response = self.client.responses.create(
-                model=self.settings.openai_model,
-                input=[
-                    {"role": "system", "content": instructions},
-                    {"role": "user", "content": prompt},
-                ],
-                max_output_tokens=700,
-            )
-            payload = self._extract_json(response.output_text)
-            if not payload:
-                return None
-
-            if not isinstance(payload.get("state_update"), dict):
-                payload["state_update"] = {}
-            if not isinstance(payload.get("reply"), str):
-                payload["reply"] = ""
-
-            ask = payload.get("ask")
-            if ask is not None and not isinstance(ask, dict):
-                payload["ask"] = None
-            payload["ask_question"] = bool(payload.get("ask_question", payload.get("ask") is not None))
-
-            cta = str(payload.get("cta", "none")).lower().strip()
-            payload["cta"] = cta if cta in {"none", "soft", "hard"} else "none"
-            verbosity = str(payload.get("verbosity", "short")).lower().strip()
-            payload["verbosity"] = verbosity if verbosity in {"short", "expanded"} else "short"
-            topic = str(payload.get("topic", "general")).lower().strip()
-            payload["topic"] = topic if topic in {"fees", "retirement", "insurance", "investing", "booking", "general"} else "general"
-            payload["include_booking_link"] = bool(payload.get("include_booking_link", False))
-            payload["reply"] = re.sub(r"\s+\n", "\n", payload["reply"]).strip()
-            return payload
-        except Exception:
             return None
 
         conversation_text = "\n".join(
             f"{m['role']}: {m['content']}" for m in recent_messages[-8:]
         )
         context_text = "\n---\n".join(retrieval_context[:3])
-        allowed_keys = allowed_question_keys + ["null"]
 
-        instructions = (
-            "You are a compliant assistant for Global Expat Wealth. Return JSON only.\n"
-            "Voice Contract:\n"
-            "- Write like you're texting a smart 16-year-old.\n"
-            "- Use short sentences and plain words.\n"
-            "- Calm, friendly, not salesy.\n"
-            "- No brochure lists.\n"
-            "Reply Limits:\n"
-            "- answer must be 2-4 short sentences, max 120 words unless user asked for detail.\n"
-            "- max 2 concepts in one answer.\n"
-            "- answer must contain no question marks.\n"
-            "- do not list services.\n"
-            "Banned buzzwords: tax-efficient, diversified portfolio, income strategies, access to specialists, fund managers, wealth preservation, bespoke, decumulation.\n"
-            "CTA Policy:\n"
-            "- Only include booking link when gate is open.\n"
-            "- If gate is closed, include_booking_link must be false.\n"
-            "Golden examples:\n"
-            "1) User: Can you help me retire in 10 years?\n"
-            "{\"answer\":\"Yes. We can map where you are now and what retirement could look like in simple steps. Then we can work out what needs to change over the next decade.\",\"question_key\":\"country\",\"ask_question\":true,\"question_prefix_style\":\"none\",\"soft_cta\":true,\"include_booking_link\":false}\n"
-            "2) Bad style to avoid: long service dump with repeated questions.\n"
-            "3) User: Should I move my UK pension?\n"
-            "{\"answer\":\"I can't give a personal recommendation in chat. I can explain the usual trade-offs, like fees, rules, and flexibility.\",\"question_key\":\"uk_pension\",\"ask_question\":true,\"question_prefix_style\":\"just_so\",\"soft_cta\":true,\"include_booking_link\":false}\n"
-            "4) User: What are your fees?\n"
-            "{\"answer\":\"Fair question. Fees depend on what kind of help you need and how long you want support. Dan keeps this clear and upfront.\",\"question_key\":\"goal\",\"ask_question\":true,\"question_prefix_style\":\"one_thing_first\",\"soft_cta\":true,\"include_booking_link\":false}\n"
-            "5) User: How do I get started?\n"
-            "{\"answer\":\"The first step is to quickly understand your goal and current setup so we can point you in the right direction.\",\"question_key\":\"country\",\"ask_question\":true,\"question_prefix_style\":\"none\",\"soft_cta\":false,\"include_booking_link\":true}\n"
-            "6) User: I am confused.\n"
-            "{\"answer\":\"That is normal. We can simplify this into a few clear decisions so it feels manageable.\",\"question_key\":\"goal\",\"ask_question\":false,\"question_prefix_style\":\"none\",\"soft_cta\":true,\"include_booking_link\":false}\n"
+        system_prompt = (
+            "You are a conversation planner for a sales concierge bot.\n"
+            "Return JSON only.\n"
+            "Focus on natural pacing. Helpful first. Ask at most one question.\n"
+            "Do not ask for slots already answered.\n"
+            "Do not use robotic lead-ins.\n"
+            "Use progressive qualification naturally.\n"
         )
 
-        prompt = f"""
+        user_prompt = f"""
 User message:
-{message}
+{user_message}
 
-Recent conversation:
+Recent turns:
 {conversation_text}
+
+Running state:
+{json.dumps(state_snapshot, ensure_ascii=False)}
 
 Retrieved context:
 {context_text}
 
-Allowed question keys:
-{allowed_keys}
-
 Constraints:
-- cta_gate_open={cta_gate_open}
-- soft_cta_allowed={soft_cta_allowed}
-- boundary_needed={boundary_needed}
-- default_ask_question={default_ask_question}
-- default_question_prefix_style={default_prefix_style}
+{json.dumps(constraints, ensure_ascii=False)}
 
-Return strict JSON with exactly these fields:
+Return strict JSON:
 {{
-  "answer": "...",
-  "question_key": "country|goal|timeline|assets_context|uk_pension|null",
-  "ask_question": true,
-  "question_prefix_style": "none|one_thing_first|just_so|to_make_this_useful",
-  "soft_cta": true,
-  "include_booking_link": false
+  "intent": "greeting|faq|qualify|objection|booking|other",
+  "ack": "short acknowledgement",
+  "value": ["1-3 helpful points"],
+  "next_question": {{
+    "key": "country|goal|timeline|assets_context|email|name|null",
+    "text": "natural question text or null"
+  }},
+  "cta": {{
+    "type": "none|soft|hard",
+    "reason": "short reason",
+    "include_link": false
+  }},
+  "slot_updates": {{
+    "country": null,
+    "goal": null,
+    "timeline": null,
+    "assets_context": null,
+    "uk_pension_flag": null,
+    "email": null,
+    "name": null
+  }},
+  "state_update": {{
+    "stage": "greeting|discovery|qualifying|faq|objection|closing",
+    "lead_score": 0,
+    "lead_fit": "low|med|high",
+    "running_summary": "1-3 sentences",
+    "active_topic": "fees|retirement|insurance|investing|booking|general",
+    "topic_turns_remaining": 0
+  }},
+  "notes_for_ui": {{
+    "email_send": false,
+    "email_subject": "",
+    "email_body": ""
+  }},
+  "verbosity": "short|expanded"
 }}
 """
-
         try:
+            logger.info("planner_model=%s", self.settings.openai_model)
             response = self.client.responses.create(
                 model=self.settings.openai_model,
                 input=[
-                    {"role": "system", "content": instructions},
-                    {"role": "user", "content": prompt},
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
                 ],
-                max_output_tokens=450,
+                max_output_tokens=700,
             )
             payload = self._extract_json(response.output_text)
             if not payload:
                 return None
-
-            answer = str(payload.get("answer", "")).strip()
-            question_key = payload.get("question_key")
-            ask_question = bool(payload.get("ask_question", default_ask_question))
-            question_prefix_style = str(payload.get("question_prefix_style", default_prefix_style))
-            soft_cta = bool(payload.get("soft_cta", False))
-            include_booking_link = bool(payload.get("include_booking_link", False))
-
-            if question_key == "null":
-                question_key = None
-
-            allowed_set = set(allowed_question_keys)
-            if question_key is not None and question_key not in allowed_set:
-                question_key = allowed_question_keys[0] if allowed_question_keys else None
-
-            answer = answer.replace("?", ".")
-            answer = re.sub(r"\s+", " ", answer).strip()
-
-            if not cta_gate_open:
-                include_booking_link = False
-            if not soft_cta_allowed:
-                soft_cta = False
-            if not ask_question:
-                question_key = None
-
-            if question_prefix_style not in {
-                "none",
-                "one_thing_first",
-                "just_so",
-                "to_make_this_useful",
-            }:
-                question_prefix_style = default_prefix_style
-
-            if not answer:
-                return None
-
-            return {
-                "answer": answer,
-                "question_key": question_key,
-                "ask_question": ask_question,
-                "question_prefix_style": question_prefix_style,
-                "soft_cta": soft_cta,
-                "include_booking_link": include_booking_link,
-            }
+            return self._normalize_plan(payload)
         except Exception:
             return None
+
+    def write_turn(
+        self,
+        approved_plan: dict[str, Any],
+        user_message: str,
+        recent_messages: list[dict[str, Any]],
+    ) -> str | None:
+        if not self.enabled or not self.client:
+            return None
+
+        conversation_text = "\n".join(
+            f"{m['role']}: {m['content']}" for m in recent_messages[-6:]
+        )
+        system_prompt = (
+            "Write the final assistant reply for chat.\n"
+            "Natural, friendly, calm. 2-6 short sentences by default.\n"
+            "Use line breaks. No corporate dump. No robotic framing.\n"
+            "If plan says include link, include it exactly once.\n"
+            "If plan has a question, include only that one question.\n"
+        )
+        user_prompt = f"""
+User message:
+{user_message}
+
+Recent turns:
+{conversation_text}
+
+Approved plan JSON:
+{json.dumps(approved_plan, ensure_ascii=False)}
+"""
+        try:
+            logger.info("writer_model=%s", self.settings.openai_model)
+            response = self.client.responses.create(
+                model=self.settings.openai_model,
+                input=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                max_output_tokens=500,
+            )
+            text = (response.output_text or "").strip()
+            return re.sub(r"\n{3,}", "\n\n", text).strip() if text else None
+        except Exception:
+            return None
+
+    @staticmethod
+    def _normalize_plan(payload: dict[str, Any]) -> dict[str, Any]:
+        out = dict(payload)
+        out.setdefault("intent", "other")
+        out.setdefault("ack", "")
+        out.setdefault("value", [])
+        out.setdefault("next_question", {"key": None, "text": None})
+        out.setdefault("cta", {"type": "none", "reason": "", "include_link": False})
+        out.setdefault("slot_updates", {})
+        out.setdefault("state_update", {})
+        out.setdefault("notes_for_ui", {"email_send": False, "email_subject": "", "email_body": ""})
+        out.setdefault("verbosity", "short")
+
+        if not isinstance(out["value"], list):
+            out["value"] = []
+        out["value"] = [str(v).strip() for v in out["value"] if str(v).strip()][:3]
+
+        nq = out.get("next_question")
+        if not isinstance(nq, dict):
+            nq = {"key": None, "text": None}
+        key = nq.get("key")
+        text = nq.get("text")
+        if key in {"null", "", None}:
+            key = None
+        nq["key"] = key
+        nq["text"] = str(text).strip() if text else None
+        out["next_question"] = nq
+
+        cta = out.get("cta")
+        if not isinstance(cta, dict):
+            cta = {"type": "none", "reason": "", "include_link": False}
+        cta_type = str(cta.get("type", "none")).lower().strip()
+        cta["type"] = cta_type if cta_type in {"none", "soft", "hard"} else "none"
+        cta["reason"] = str(cta.get("reason", "")).strip()
+        cta["include_link"] = bool(cta.get("include_link", False))
+        out["cta"] = cta
+
+        verbosity = str(out.get("verbosity", "short")).lower().strip()
+        out["verbosity"] = verbosity if verbosity in {"short", "expanded"} else "short"
+        return out
 
     @staticmethod
     def _extract_json(text: str | None) -> dict[str, Any] | None:

@@ -23,7 +23,7 @@ class Settings(BaseSettings):
     retrieval_weak_threshold: float = Field(default=0.08, alias="RETRIEVAL_WEAK_THRESHOLD")
 
     openai_api_key: str = Field(default="", alias="OPENAI_API_KEY")
-    openai_model: str = Field(default="gpt-4.1-mini", alias="OPENAI_MODEL")
+    openai_model: str = Field(default="gpt-5-mini", alias="OPENAI_MODEL")
     use_openai_chat: bool = Field(default=True, alias="USE_OPENAI_CHAT")
 
     default_calendly_link: str = Field(
