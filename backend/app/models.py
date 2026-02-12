@@ -93,6 +93,8 @@ class ConversationState(BaseModel):
     recent_assistant_sentences: list[str] = Field(default_factory=list)
     answered_keys: set[str] = Field(default_factory=set)
     goal_unclear: bool = False
+    active_topic: str = "general"
+    topic_turns_remaining: int = 0
     slots: dict[str, Any] = Field(default_factory=dict)
     asked: list[str] = Field(default_factory=list)
     answered: list[str] = Field(default_factory=list)

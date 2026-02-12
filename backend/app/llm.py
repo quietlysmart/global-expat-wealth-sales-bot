@@ -68,6 +68,8 @@ class OptionalLLM:
             "Format:\n"
             "- reply should be 2-6 short lines with blank lines between ideas.\n"
             "- ask.question is optional and should be one natural question at most.\n"
+            "- ask_question must be true only when ask is present.\n"
+            "- set verbosity=expanded for explain/overview/how-it-works/fees/confused/next-steps requests.\n"
             "- cta must be one of: none, soft, hard.\n"
             "- include_booking_link true only when hard CTA is intended.\n"
             "Compliance:\n"
@@ -107,6 +109,8 @@ Return JSON with exactly this shape:
     "asked": [],
     "answered": [],
     "lead_score": 0,
+    "active_topic": "fees|retirement|insurance|investing|booking|general",
+    "topic_turns_remaining": 0,
     "flags": {{
       "goal_unclear": false,
       "user_wants_call": false,
@@ -114,7 +118,10 @@ Return JSON with exactly this shape:
     }}
   }},
   "reply": "...",
+  "ask_question": false,
   "ask": {{"slot":"country|goal|timeline|assets_context|uk_pension|email|name","question":"..."}} or null,
+  "verbosity": "short|expanded",
+  "topic": "fees|retirement|insurance|investing|booking|general",
   "cta": "none|soft|hard",
   "include_booking_link": false
 }}
@@ -140,9 +147,14 @@ Return JSON with exactly this shape:
             ask = payload.get("ask")
             if ask is not None and not isinstance(ask, dict):
                 payload["ask"] = None
+            payload["ask_question"] = bool(payload.get("ask_question", payload.get("ask") is not None))
 
             cta = str(payload.get("cta", "none")).lower().strip()
             payload["cta"] = cta if cta in {"none", "soft", "hard"} else "none"
+            verbosity = str(payload.get("verbosity", "short")).lower().strip()
+            payload["verbosity"] = verbosity if verbosity in {"short", "expanded"} else "short"
+            topic = str(payload.get("topic", "general")).lower().strip()
+            payload["topic"] = topic if topic in {"fees", "retirement", "insurance", "investing", "booking", "general"} else "general"
             payload["include_booking_link"] = bool(payload.get("include_booking_link", False))
             payload["reply"] = re.sub(r"\s+\n", "\n", payload["reply"]).strip()
             return payload

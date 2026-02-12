@@ -85,6 +85,23 @@ CALL_INTENT_PATTERNS = [
     "talk to dan",
 ]
 
+SMALL_TALK_PATTERNS = [
+    "hi",
+    "hello",
+    "hey",
+    "whats up",
+    "what's up",
+    "yo",
+]
+
+TOPIC_KEYWORDS = {
+    "fees": ["fee", "fees", "cost", "price", "pricing", "how much"],
+    "retirement": ["retire", "retirement", "pension"],
+    "insurance": ["insurance", "critical illness", "life cover", "life insurance", "protect"],
+    "investing": ["invest", "investing", "lump sum", "portfolio", "save more", "savings"],
+    "booking": ["book", "booking", "call", "calendly", "speak to dan", "talk to dan"],
+}
+
 FRICTION_PATTERNS = [
     "i'm not sure",
     "i am not sure",
@@ -204,6 +221,7 @@ class ChatOrchestrator:
         self.db.add_message(conversation_id, "user", req.channel_hint, req.message)
 
         message_lower = req.message.lower().strip()
+        message_topic = self._detect_topic(message_lower)
         explicit_intent = self._is_explicit_intent(message_lower)
         explicit_link_request = self._is_link_request(message_lower)
         user_wants_call_signal = self._is_call_intent_signal(message_lower)
@@ -226,6 +244,7 @@ class ChatOrchestrator:
         self._sync_state_slots_from_profile(state, profile_after)
         if user_wants_call_signal:
             state.flags["user_wants_call"] = True
+        self._update_active_topic(state, message_topic)
 
         qualifier_count = self.dialog.qualifier_count(state)
         state.stage = self._infer_stage(
@@ -307,6 +326,7 @@ class ChatOrchestrator:
                 hard_cta_allowed=hard_cta_allowed,
                 user_wants_call_signal=user_wants_call_signal,
                 personal_advice_trigger=personal_advice_trigger,
+                message_topic=message_topic,
             )
 
         self._merge_model_state_update(state, profile_after, plan.get("state_update", {}))
@@ -317,6 +337,7 @@ class ChatOrchestrator:
             plan=plan,
             state=state,
             req_message=req.message,
+            message_topic=message_topic,
             explicit_intent=explicit_intent,
             explicit_link_request=explicit_link_request,
             user_wants_call_signal=user_wants_call_signal,
@@ -329,6 +350,10 @@ class ChatOrchestrator:
         question_slot = repaired["question_slot"]
         include_soft_cta = repaired["soft_cta"]
         include_booking_link = repaired["include_booking_link"]
+        verbosity = repaired.get("verbosity", "short")
+        planned_topic = repaired.get("topic", state.active_topic)
+        if planned_topic in {"fees", "retirement", "insurance", "investing", "booking", "general"}:
+            state.active_topic = planned_topic
 
         force_hard_cta = hard_cta_allowed and (
             explicit_intent
@@ -362,6 +387,11 @@ class ChatOrchestrator:
             if confirmation and confirmation.lower() not in answer.lower():
                 answer = f"{confirmation} {answer}"
 
+        if message_topic == "fees":
+            answer = self._ensure_fee_answer(answer)
+            if question_line and "timeline" in question_line.lower() and "retire" not in message_lower:
+                question_line = None
+
         if question_line and include_booking_link:
             question_line = None
         if question_line and include_soft_cta and not (explicit_intent or explicit_link_request):
@@ -374,6 +404,7 @@ class ChatOrchestrator:
             include_booking_link=include_booking_link,
             user_message=req.message,
             detail_requested=detail_requested,
+            verbosity=verbosity,
             state=state,
         )
 
@@ -384,6 +415,10 @@ class ChatOrchestrator:
             state.helpful_turn_count += 1
 
         state.counters.assistant_turn_count = next_turn
+        if state.active_topic != "general" and message_topic == "general":
+            state.topic_turns_remaining = max(0, state.topic_turns_remaining - 1)
+            if state.topic_turns_remaining == 0:
+                state.active_topic = "general"
         if include_booking_link:
             state.counters.hard_cta_last_shown_turn = next_turn
             state.counters.hard_cta_shown_count += 1
@@ -417,8 +452,7 @@ class ChatOrchestrator:
         )
 
         if any(action.type == "draft_followup_email" for action in actions):
-            if "prepared a draft email" not in reply.lower():
-                reply += "\n\nI've prepared a draft email for review (not sent)."
+            reply = self._apply_email_followup_copy(reply=reply, demo_mode=req.demo_mode)
 
         self.db.save_profile(conversation_id, profile_after)
         self.db.save_conversation_state(conversation_id, state)
@@ -448,6 +482,9 @@ class ChatOrchestrator:
             state.slots = {}
         state.asked = list(state.asked or [])
         state.answered = list(state.answered or [])
+        if not state.active_topic:
+            state.active_topic = "general"
+        state.topic_turns_remaining = max(0, int(state.topic_turns_remaining or 0))
 
     def _sync_state_slots_from_profile(self, state: ConversationState, profile: ProspectProfile) -> None:
         slots = {
@@ -472,6 +509,8 @@ class ChatOrchestrator:
             "lead_score": max(0, min(100, int(state.lead_score))),
             "cta": state.cta,
             "flags": state.flags,
+            "active_topic": state.active_topic,
+            "topic_turns_remaining": state.topic_turns_remaining,
         }
 
     def _build_generation_constraints(
@@ -488,6 +527,8 @@ class ChatOrchestrator:
             "answered_slots": sorted(state.answered_keys),
             "banned_prefixes": BANNED_PREFIX_PHRASES,
             "one_question_max": True,
+            "active_topic": state.active_topic,
+            "topic_turns_remaining": state.topic_turns_remaining,
         }
 
     @staticmethod
@@ -506,7 +547,7 @@ class ChatOrchestrator:
             return "closing"
         if qualifier_count >= 2:
             return "qualifying"
-        if message_lower in {"hi", "hello", "whats up?", "what's up?", "hey"}:
+        if ChatOrchestrator._is_small_talk_opening(message_lower):
             return "greeting"
         return "helping"
 
@@ -524,6 +565,7 @@ class ChatOrchestrator:
         hard_cta_allowed: bool,
         user_wants_call_signal: bool,
         personal_advice_trigger: bool,
+        message_topic: str,
     ) -> dict[str, Any]:
         message_lower = message.lower().strip()
         missing_slots = [s for s in ["country", "goal", "timeline", "assets_context", "uk_pension"] if s not in state.answered_keys]
@@ -532,16 +574,35 @@ class ChatOrchestrator:
         ask_obj: dict[str, str] | None = None
         cta = "none"
         include_booking_link = False
+        verbosity = "short"
+        topic = message_topic if message_topic != "general" else state.active_topic
 
         if user_wants_call_signal:
             reply = "Yes, absolutely. We can set that up now."
             cta = "hard"
             include_booking_link = hard_cta_allowed
+            topic = "booking"
+        elif self._is_small_talk_opening(message_lower):
+            reply = "Hey, good to meet you."
+            ask_obj = {
+                "slot": "goal",
+                "question": "What are you thinking about - saving, retirement, or just getting organised?",
+            }
+            topic = "general"
         elif objection:
             reply = str(objection.get("response", "Fair point. We can work through this step by step."))
         elif personal_advice_trigger:
             reply = "I can share general guidance here. The key checks are fees, rules, and flexibility."
             cta = "soft" if soft_cta_allowed else "none"
+        elif message_topic == "fees" or "cost" in message_lower or "fee" in message_lower:
+            reply = (
+                "Good question. Fees depend on the type of support and whether it's one-off or ongoing."
+                " Dan explains fees clearly before you decide anything."
+            )
+            verbosity = "expanded"
+            topic = "fees"
+            if not state.last_question_key and "goal" not in state.answered_keys:
+                ask_obj = {"slot": "goal", "question": "Is this for one-off help or ongoing support?"}
         elif just_bound_key:
             reply = self._binding_confirmation_line(just_bound_key, profile) or "Thanks, that helps."
         elif retrieval_results:
@@ -554,12 +615,15 @@ class ChatOrchestrator:
             bool(missing_slots)
             and not user_wants_call_signal
             and not include_booking_link
+            and ask_obj is None
             and not (state.counters.question_last_shown_turn and (state.counters.assistant_turn_count + 1 - state.counters.question_last_shown_turn) < 2)
         )
         if can_ask and not (low_signal and state.last_question_key in missing_slots):
             slot = missing_slots[0]
             if state.goal_unclear and "goal" in missing_slots:
                 slot = "goal"
+            if topic == "fees" and slot == "timeline" and "retire" not in message_lower:
+                slot = "goal" if "goal" in missing_slots else slot
             ask_obj = {"slot": slot, "question": self._question_for_slot(slot, goal_unclear=state.goal_unclear)}
         elif low_signal and not ask_obj and missing_slots and state.last_question_key in missing_slots:
             alternatives = [slot for slot in missing_slots if slot != state.last_question_key]
@@ -580,10 +644,15 @@ class ChatOrchestrator:
                 "asked": [],
                 "answered": sorted(state.answered_keys),
                 "lead_score": state.lead_score,
+                "active_topic": topic,
+                "topic_turns_remaining": state.topic_turns_remaining,
                 "flags": state.flags,
             },
             "reply": reply,
+            "ask_question": bool(ask_obj),
             "ask": ask_obj,
+            "verbosity": verbosity,
+            "topic": topic,
             "cta": cta,
             "include_booking_link": include_booking_link,
         }
@@ -613,6 +682,12 @@ class ChatOrchestrator:
         lead_score = state_update.get("lead_score")
         if isinstance(lead_score, (int, float)):
             state.lead_score = max(0, min(100, int(lead_score)))
+        active_topic = state_update.get("active_topic")
+        if isinstance(active_topic, str) and active_topic in {"fees", "retirement", "insurance", "investing", "booking", "general"}:
+            state.active_topic = active_topic
+        topic_turns_remaining = state_update.get("topic_turns_remaining")
+        if isinstance(topic_turns_remaining, (int, float)):
+            state.topic_turns_remaining = max(0, min(3, int(topic_turns_remaining)))
 
         slots = state_update.get("slots")
         if isinstance(slots, dict):
@@ -661,6 +736,7 @@ class ChatOrchestrator:
         plan: dict[str, Any],
         state: ConversationState,
         req_message: str,
+        message_topic: str,
         explicit_intent: bool,
         explicit_link_request: bool,
         user_wants_call_signal: bool,
@@ -673,6 +749,7 @@ class ChatOrchestrator:
 
         ask_slot = None
         question_line = None
+        ask_question = bool(plan.get("ask_question", False))
         ask_obj = plan.get("ask")
         if isinstance(ask_obj, dict):
             slot_raw = ask_obj.get("slot")
@@ -681,18 +758,33 @@ class ChatOrchestrator:
             q_raw = ask_obj.get("question")
             if isinstance(q_raw, str):
                 question_line = self._strip_banned_prefix_lines(q_raw.strip())
+                ask_question = True
 
+        if not ask_question:
+            ask_slot, question_line = None, None
         if ask_slot and ask_slot in state.answered_keys and not self._has_correction_signal(req_message):
             ask_slot, question_line = None, None
         if ask_slot and ask_slot == state.last_question_key and not self._has_correction_signal(req_message):
             ask_slot, question_line = None, None
         if ask_slot and not question_line:
             question_line = self._question_for_slot(ask_slot, goal_unclear=state.goal_unclear)
+        if message_topic == "fees" and question_line and "timeline" in question_line.lower() and "retire" not in req_message.lower():
+            ask_slot, question_line = None, None
 
         cta = str(plan.get("cta", "none")).lower().strip()
         if cta not in {"none", "soft", "hard"}:
             cta = "none"
         include_booking_link = bool(plan.get("include_booking_link", False))
+        verbosity = str(plan.get("verbosity", "short")).lower().strip()
+        if verbosity not in {"short", "expanded"}:
+            verbosity = "short"
+        if self._needs_expanded_reply(req_message.lower()):
+            verbosity = "expanded"
+        topic = str(plan.get("topic", state.active_topic)).lower().strip()
+        if topic not in {"fees", "retirement", "insurance", "investing", "booking", "general"}:
+            topic = state.active_topic
+        if topic == "general" and message_topic != "general":
+            topic = message_topic
 
         if user_wants_call_signal or state.flags.get("user_wants_call"):
             cta = "hard"
@@ -723,6 +815,8 @@ class ChatOrchestrator:
             "question_slot": ask_slot,
             "soft_cta": soft_cta,
             "include_booking_link": include_booking_link,
+            "verbosity": verbosity,
+            "topic": topic,
         }
 
     @staticmethod
@@ -752,6 +846,68 @@ class ChatOrchestrator:
     def _has_correction_signal(message: str) -> bool:
         lower = message.lower()
         return "actually" in lower or "change that" in lower or "not " in lower
+
+    @staticmethod
+    def _detect_topic(message_lower: str) -> str:
+        for topic, keywords in TOPIC_KEYWORDS.items():
+            if any(keyword in message_lower for keyword in keywords):
+                return topic
+        return "general"
+
+    @staticmethod
+    def _is_small_talk_opening(message_lower: str) -> bool:
+        cleaned = message_lower.strip().rstrip("!?.,")
+        return cleaned in SMALL_TALK_PATTERNS
+
+    def _update_active_topic(self, state: ConversationState, message_topic: str) -> None:
+        if message_topic != "general":
+            state.active_topic = message_topic
+            state.topic_turns_remaining = 2
+            return
+        if state.topic_turns_remaining > 0 and state.active_topic != "general":
+            return
+        state.active_topic = "general"
+        state.topic_turns_remaining = 0
+
+    @staticmethod
+    def _ensure_fee_answer(answer: str) -> str:
+        lower = answer.lower()
+        if "fee" in lower or "cost" in lower or "pricing" in lower:
+            return answer
+        fee_line = "Fees depend on the type of help you need and whether it is one-off or ongoing."
+        return f"{fee_line} {answer}".strip()
+
+    @staticmethod
+    def _apply_email_followup_copy(reply: str, demo_mode: bool) -> str:
+        cleaned = re.sub(r"(?i)i can prepare an email for dan to send\.?\s*want me to draft it\??", "", reply).strip()
+        cleaned = re.sub(r"(?i)i've prepared a draft email for review \(not sent\)\.?", "", cleaned).strip()
+        if demo_mode:
+            if "i've sent a confirmation email with the booking details." not in cleaned.lower():
+                cleaned = f"{cleaned}\n\nOk - I've sent a confirmation email with the booking details."
+            cleaned = re.sub(r"(?i)want me to send it\??", "", cleaned).strip()
+            return cleaned
+        if "i can prepare an email for dan to send" not in cleaned.lower():
+            cleaned = f"{cleaned}\n\nI can prepare an email for Dan to send. Want me to draft it?"
+        return cleaned
+
+    @staticmethod
+    def _needs_expanded_reply(message_lower: str) -> bool:
+        markers = [
+            "explain",
+            "overview",
+            "tell me more",
+            "how does it work",
+            "how it works",
+            "what do you do",
+            "cost",
+            "fees",
+            "what?",
+            "what ?",
+            "next step",
+            "what next",
+            "confused",
+        ]
+        return any(marker in message_lower for marker in markers)
 
     @staticmethod
     def _question_for_slot(slot: str, goal_unclear: bool = False) -> str:
@@ -785,6 +941,7 @@ class ChatOrchestrator:
         include_booking_link: bool,
         user_message: str,
         detail_requested: bool,
+        verbosity: str,
         state: ConversationState,
     ) -> str:
         cleaned_answer = self._normalize_answer_text(answer, user_message=user_message)
@@ -805,7 +962,8 @@ class ChatOrchestrator:
             boundary_allowed=BOUNDARY_LINE.lower() in cleaned_answer.lower(),
         )
 
-        if self._word_count(reply) > 120 and not detail_requested:
+        allow_expanded = verbosity == "expanded" or detail_requested
+        if self._word_count(reply) > 120 and not allow_expanded:
             reply = self._trim_for_length(reply)
 
         self._remember_assistant_sentences(state, reply)
@@ -1400,7 +1558,7 @@ class ChatOrchestrator:
                         "recap": self._build_recap(profile_after),
                         "next_steps": "Book a 30-minute consultation with Dan.",
                         "booking_link_placeholder": self.settings.default_calendly_link,
-                        "status": "prepared_not_sent",
+                        "status": "sent_in_demo" if demo_mode else "draft_for_review",
                     },
                 )
             )
@@ -1413,7 +1571,7 @@ class ChatOrchestrator:
                         "preferred_times": "To be confirmed",
                         "timezone": profile_after.timezone or "Unknown",
                         "meeting_type": "30-min discovery call",
-                        "status": "prepared_not_sent",
+                        "status": "scheduled_in_demo" if demo_mode else "prepared_for_human_confirmation",
                     },
                 )
             )
