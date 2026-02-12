@@ -1,0 +1,112 @@
+{
+  "name": "Global Expat Wealth Sales Concierge Playbook",
+  "version": "1.0",
+  "qualification_flow": {
+    "guidance": "Ask 2-4 questions at a time. Keep it conversational and short.",
+    "question_sets": [
+      {
+        "id": "location_basics",
+        "questions": [
+          "Which country are you living in now?",
+          "What is your nationality or passport country?"
+        ]
+      },
+      {
+        "id": "goals_timeline",
+        "questions": [
+          "What are your top goals right now: retirement, education funding, wealth preservation, or something else?",
+          "What timeframe are you targeting for these goals?"
+        ]
+      },
+      {
+        "id": "assets_band",
+        "questions": [
+          "Which range best describes investable assets: under $100k, $100k-$250k, $250k-$500k, $500k-$1m, or $1m+?",
+          "Do you want to include any pension assets in planning?"
+        ]
+      },
+      {
+        "id": "risk_and_pension",
+        "questions": [
+          "How would you describe risk comfort: cautious, balanced, or growth-oriented?",
+          "Do you have UK pensions and are you considering consolidation?"
+        ]
+      }
+    ]
+  },
+  "objection_handling": [
+    {
+      "name": "fees",
+      "patterns": ["fees", "cost", "charge", "pricing", "how much"],
+      "response": "Great question. Fees depend on your situation and which service mix is needed, so we cover them transparently on a short discovery call with Dan. In this chat I can outline the process and help confirm fit first."
+    },
+    {
+      "name": "already_adviser",
+      "patterns": ["already have an adviser", "already have an advisor", "already have advisor", "already working with"],
+      "response": "That makes sense. Many clients speak with Dan for a second, independent view on cross-border issues without replacing existing relationships right away."
+    },
+    {
+      "name": "need_to_think",
+      "patterns": ["need to think", "let me think", "not sure yet"],
+      "response": "No pressure. A practical next step is a no-obligation 30-minute call so you can ask direct questions and decide if there is a fit."
+    },
+    {
+      "name": "trust_issues",
+      "patterns": ["don't trust", "do not trust", "burned before", "bad experience", "mis-sold"],
+      "response": "Thanks for sharing that. It's completely reasonable to be cautious. Dan's process is transparent and independent, and the first call is focused on understanding your goals and whether the approach is right for you."
+    },
+    {
+      "name": "pension_reluctance",
+      "patterns": ["don't want to move my pension", "do not want to move my pension", "keep pension where it is"],
+      "response": "Understood. Moving a pension is not always the right route. In this chat I can only provide general considerations; Dan can review your situation in detail on a call before any decisions."
+    },
+    {
+      "name": "why_you",
+      "patterns": ["why you", "what's different", "what is different", "why should i choose"],
+      "response": "Global Expat Wealth is positioned around independent, cross-border guidance for expats in Asia, with long practical experience helping clients plan, invest, protect, and pass on wealth while living abroad."
+    }
+  ],
+  "compliance_guardrails": {
+    "policy": "A",
+    "rules": [
+      "Provide general information and education only.",
+      "Do not give personalized financial advice or specific product recommendations.",
+      "Do not promise returns or guaranteed outcomes.",
+      "When asked for specific recommendations, switch to qualification questions and offer a call with Dan.",
+      "Use plain-English disclaimer that final guidance happens in a call with Dan."
+    ],
+    "handoff_triggers": [
+      "best fund",
+      "which fund",
+      "recommend a fund",
+      "is this good for me",
+      "should i do",
+      "specific tax advice",
+      "legal advice",
+      "guaranteed return",
+      "move my pension"
+    ],
+    "safe_disclaimer": "I can share general information here, but I can't provide personalized financial advice in chat. The right next step is a short call with Dan to review your exact situation."
+  },
+  "conversation_goals": [
+    "Answer + qualify",
+    "Handle objection + qualify",
+    "Capture lead + offer booking",
+    "Handoff with a clean summary for Dan"
+  ],
+  "stage_rules": {
+    "awareness_keywords": ["learn", "understand", "what is", "how does"],
+    "consideration_keywords": ["fees", "compare", "advisor", "adviser", "options"],
+    "intent_keywords": ["book", "call", "consultation", "email me", "next step"]
+  },
+  "followup_email_template": {
+    "subject": "Your Global Expat Wealth next steps",
+    "body_sections": [
+      "Thanks for the conversation",
+      "Recap of your goals",
+      "General topics discussed",
+      "Suggested next step: 30-minute call with Dan",
+      "Booking link placeholder"
+    ]
+  }
+}

@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+.env
+*.log
+
+# Local runtime state
+data/*.db
+data/*.sqlite
+logs/*.jsonl
+
+# OS/editor
+.DS_Store
+.vscode/
+.idea/
