@@ -88,6 +88,13 @@ Add your OpenAI key in `.env` for live AI inference:
 OPENAI_API_KEY=your_key_here
 USE_OPENAI_CHAT=true
 OPENAI_MODEL=gpt-5-mini
+AUTH_REQUIRED=true
+```
+
+Create a login user (stored securely with password hashing in SQLite):
+
+```bash
+python scripts/create_user.py --email dan.whiting@globalexpatwealth.com --password "your_password_here"
 ```
 
 2. Ingest the provided services PDF:
@@ -111,6 +118,8 @@ uvicorn backend.app.main:app --host 0.0.0.0 --port 8000 --reload
 4. Open demo:
 
 - http://localhost:8000/
+
+Log in with your created user on the login screen, then use the chat.
 
 Check AI runtime status:
 
@@ -146,6 +155,15 @@ Request:
   "demo_mode": true
 }
 ```
+
+### `POST /api/login`
+Creates an authenticated session token.
+
+### `POST /api/logout`
+Revokes current session token.
+
+### `GET /api/me`
+Returns current authenticated user email.
 
 Response:
 

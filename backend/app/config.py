@@ -25,6 +25,10 @@ class Settings(BaseSettings):
     openai_api_key: str = Field(default="", alias="OPENAI_API_KEY")
     openai_model: str = Field(default="gpt-5-mini", alias="OPENAI_MODEL")
     use_openai_chat: bool = Field(default=True, alias="USE_OPENAI_CHAT")
+    auth_required: bool = Field(default=True, alias="AUTH_REQUIRED")
+    auth_session_ttl_hours: int = Field(default=24, alias="AUTH_SESSION_TTL_HOURS")
+    initial_user_email: str = Field(default="", alias="INITIAL_USER_EMAIL")
+    initial_user_password: str = Field(default="", alias="INITIAL_USER_PASSWORD")
 
     default_calendly_link: str = Field(
         default="https://calendly.com/globalexpatwealth/30min",

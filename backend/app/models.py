@@ -145,3 +145,22 @@ class ActionLogRecord(BaseModel):
     payload: dict[str, Any]
     demo_mode: bool
     created_at: str
+
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+
+class LoginResponse(BaseModel):
+    access_token: str
+    token_type: Literal["bearer"] = "bearer"
+    user_email: str
+
+
+class LogoutResponse(BaseModel):
+    ok: bool = True
+
+
+class CurrentUserResponse(BaseModel):
+    email: str

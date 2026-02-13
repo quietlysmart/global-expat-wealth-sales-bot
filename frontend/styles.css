@@ -31,6 +31,10 @@ body {
   justify-items: center;
 }
 
+.hidden {
+  display: none !important;
+}
+
 .logo {
   width: 280px;
   max-width: 72vw;
@@ -45,6 +49,7 @@ h1 {
   text-align: center;
 }
 
+.auth-panel,
 .chat-panel {
   width: 100%;
   background: var(--panel);
@@ -52,6 +57,83 @@ h1 {
   border-radius: 14px;
   box-shadow: 0 12px 28px rgba(15, 36, 56, 0.1);
   overflow: hidden;
+}
+
+.auth-panel {
+  padding: 28px 20px 22px;
+  text-align: center;
+}
+
+.auth-subtitle {
+  margin: 10px auto 18px;
+  max-width: 720px;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.auth-note {
+  margin: 14px auto 0;
+  font-size: 0.92rem;
+  color: var(--muted);
+}
+
+.login-form {
+  width: min(480px, 100%);
+  margin: 0 auto;
+  display: grid;
+  gap: 10px;
+}
+
+.login-form input {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px;
+  font-size: 0.98rem;
+}
+
+.login-form button {
+  border: 0;
+  border-radius: 10px;
+  padding: 11px 16px;
+  background: var(--accent);
+  color: #fff;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.login-form button:hover {
+  background: var(--accent-hover);
+}
+
+.login-error {
+  min-height: 1.2em;
+  margin: 8px 0 0;
+  color: #b33636;
+  font-size: 0.92rem;
+}
+
+.chat-topbar {
+  border-bottom: 1px solid var(--border);
+  background: #fbfdff;
+  padding: 10px 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.user-badge {
+  font-size: 0.86rem;
+  color: var(--muted);
+}
+
+.logout-btn {
+  border: 1px solid var(--border);
+  background: #fff;
+  color: var(--ink);
+  border-radius: 9px;
+  padding: 6px 10px;
+  font-size: 0.86rem;
+  cursor: pointer;
 }
 
 .chat-messages {

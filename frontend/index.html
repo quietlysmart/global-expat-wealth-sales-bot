@@ -8,10 +8,28 @@
   </head>
   <body>
     <main class="app-shell">
-      <img src="/frontend/assets/logo.png" alt="Global Expat Wealth" class="logo" />
-      <h1>Global Expat Wealth Sales Assistant</h1>
+      <section id="loginPanel" class="auth-panel" aria-label="Login">
+        <img src="/frontend/assets/logo.png" alt="Global Expat Wealth" class="logo" />
+        <h1>Global Expat Wealth Sales Assistant</h1>
+        <p class="auth-subtitle">
+          AI concierge for qualifying prospects, handling objections, and guiding conversations toward a call with Dan.
+        </p>
+        <form id="loginForm" class="login-form">
+          <input id="loginEmail" type="email" placeholder="Email" required />
+          <input id="loginPassword" type="password" placeholder="Password" required />
+          <button type="submit">Log in</button>
+        </form>
+        <p id="loginError" class="login-error" role="alert"></p>
+        <p class="auth-note">
+          This sales assistant can be connected to email, WhatsApp, or website chat widgets.
+        </p>
+      </section>
 
-      <section class="chat-panel" aria-label="Chat">
+      <section id="chatPanel" class="chat-panel hidden" aria-label="Chat">
+        <div class="chat-topbar">
+          <div id="userBadge" class="user-badge"></div>
+          <button id="logoutButton" class="logout-btn" type="button">Log out</button>
+        </div>
         <div id="chatMessages" class="chat-messages"></div>
         <form id="chatForm" class="chat-form">
           <input id="userMessage" placeholder="Ask a question..." required />

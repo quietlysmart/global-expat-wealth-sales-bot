@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
+import os
+import secrets
 import sqlite3
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Generator
 
@@ -86,6 +90,27 @@ class Database:
                     updated_at TEXT NOT NULL,
                     FOREIGN KEY(conversation_id) REFERENCES conversations(id)
                 );
+
+                CREATE TABLE IF NOT EXISTS users (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    email TEXT NOT NULL UNIQUE,
+                    password_salt TEXT NOT NULL,
+                    password_hash TEXT NOT NULL,
+                    is_active INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS auth_sessions (
+                    token_hash TEXT PRIMARY KEY,
+                    user_id INTEGER NOT NULL,
+                    created_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    revoked_at TEXT,
+                    FOREIGN KEY(user_id) REFERENCES users(id)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_auth_sessions_user_id ON auth_sessions(user_id);
                 """
             )
             conn.commit()
@@ -267,3 +292,102 @@ class Database:
             )
             for row in rows
         ]
+
+    @staticmethod
+    def _hash_password(password: str, salt_hex: str | None = None) -> tuple[str, str]:
+        salt = bytes.fromhex(salt_hex) if salt_hex else os.urandom(16)
+        derived = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, 260000)
+        return salt.hex(), derived.hex()
+
+    @staticmethod
+    def _hash_session_token(token: str) -> str:
+        return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+    def ensure_user(self, email: str, password: str) -> int:
+        normalized_email = email.strip().lower()
+        if not normalized_email or not password:
+            raise ValueError("email and password are required")
+
+        salt_hex, password_hash = self._hash_password(password)
+        now = utc_now_iso()
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO users(email, password_salt, password_hash, is_active, created_at, updated_at)
+                VALUES (?, ?, ?, 1, ?, ?)
+                ON CONFLICT(email) DO UPDATE
+                SET password_salt=excluded.password_salt,
+                    password_hash=excluded.password_hash,
+                    is_active=1,
+                    updated_at=excluded.updated_at
+                """,
+                (normalized_email, salt_hex, password_hash, now, now),
+            )
+            row = conn.execute("SELECT id FROM users WHERE email=?", (normalized_email,)).fetchone()
+            conn.commit()
+        if not row:
+            raise RuntimeError("failed to create or update user")
+        return int(row["id"])
+
+    def verify_user_credentials(self, email: str, password: str) -> dict[str, Any] | None:
+        normalized_email = email.strip().lower()
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT id, email, password_salt, password_hash, is_active FROM users WHERE email=?",
+                (normalized_email,),
+            ).fetchone()
+        if not row or not bool(row["is_active"]):
+            return None
+
+        _, check_hash = self._hash_password(password, salt_hex=str(row["password_salt"]))
+        if not hmac.compare_digest(check_hash, str(row["password_hash"])):
+            return None
+
+        return {"id": int(row["id"]), "email": str(row["email"])}
+
+    def create_session(self, user_id: int, ttl_hours: int = 24) -> str:
+        token = secrets.token_urlsafe(48)
+        token_hash = self._hash_session_token(token)
+        now = datetime.now(timezone.utc)
+        expires_at = now + timedelta(hours=max(1, ttl_hours))
+
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO auth_sessions(token_hash, user_id, created_at, expires_at, revoked_at)
+                VALUES (?, ?, ?, ?, NULL)
+                """,
+                (token_hash, user_id, now.isoformat(), expires_at.isoformat()),
+            )
+            conn.commit()
+        return token
+
+    def get_user_by_session_token(self, token: str) -> dict[str, Any] | None:
+        token_hash = self._hash_session_token(token)
+        now_iso = datetime.now(timezone.utc).isoformat()
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT u.id, u.email
+                FROM auth_sessions s
+                JOIN users u ON u.id = s.user_id
+                WHERE s.token_hash=?
+                  AND s.revoked_at IS NULL
+                  AND s.expires_at > ?
+                  AND u.is_active=1
+                """,
+                (token_hash, now_iso),
+            ).fetchone()
+        if not row:
+            return None
+        return {"id": int(row["id"]), "email": str(row["email"])}
+
+    def revoke_session(self, token: str) -> None:
+        token_hash = self._hash_session_token(token)
+        now = utc_now_iso()
+        with self.connect() as conn:
+            conn.execute(
+                "UPDATE auth_sessions SET revoked_at=? WHERE token_hash=? AND revoked_at IS NULL",
+                (now, token_hash),
+            )
+            conn.commit()

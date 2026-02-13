@@ -1,9 +1,23 @@
+const loginPanel = document.getElementById("loginPanel");
+const chatPanel = document.getElementById("chatPanel");
+const loginForm = document.getElementById("loginForm");
+const loginEmailInput = document.getElementById("loginEmail");
+const loginPasswordInput = document.getElementById("loginPassword");
+const loginError = document.getElementById("loginError");
+
 const chatForm = document.getElementById("chatForm");
 const userMessageInput = document.getElementById("userMessage");
 const chatMessages = document.getElementById("chatMessages");
 const sendButton = chatForm.querySelector("button");
+const logoutButton = document.getElementById("logoutButton");
+const userBadge = document.getElementById("userBadge");
+
+const TOKEN_KEY = "gew_sales_auth_token";
+const EMAIL_KEY = "gew_sales_user_email";
 
 let conversationId = null;
+let accessToken = localStorage.getItem(TOKEN_KEY) || "";
+let currentEmail = localStorage.getItem(EMAIL_KEY) || "";
 
 function appendMessage(role, text) {
   const el = document.createElement("div");
@@ -28,11 +42,104 @@ function removeThinkingBubble(el) {
   }
 }
 
+function setLoggedOutState() {
+  accessToken = "";
+  currentEmail = "";
+  localStorage.removeItem(TOKEN_KEY);
+  localStorage.removeItem(EMAIL_KEY);
+  loginPanel.classList.remove("hidden");
+  chatPanel.classList.add("hidden");
+  chatMessages.innerHTML = "";
+  conversationId = null;
+  loginPasswordInput.value = "";
+}
+
+function setLoggedInState(email) {
+  currentEmail = email || "";
+  loginPanel.classList.add("hidden");
+  chatPanel.classList.remove("hidden");
+  userBadge.textContent = currentEmail;
+  if (!chatMessages.childElementCount) {
+    appendMessage("assistant", "Hi. What can I help you figure out?");
+  }
+}
+
+async function fetchMe() {
+  if (!accessToken) return false;
+  try {
+    const res = await fetch("/api/me", {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+    });
+    if (!res.ok) return false;
+    const data = await res.json();
+    currentEmail = data.email || currentEmail;
+    localStorage.setItem(EMAIL_KEY, currentEmail);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+loginForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  loginError.textContent = "";
+
+  const email = loginEmailInput.value.trim().toLowerCase();
+  const password = loginPasswordInput.value;
+  if (!email || !password) return;
+
+  loginEmailInput.disabled = true;
+  loginPasswordInput.disabled = true;
+
+  try {
+    const res = await fetch("/api/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, password }),
+    });
+
+    if (!res.ok) {
+      loginError.textContent = "Invalid login details. Please try again.";
+      return;
+    }
+
+    const data = await res.json();
+    accessToken = data.access_token || "";
+    currentEmail = data.user_email || email;
+    localStorage.setItem(TOKEN_KEY, accessToken);
+    localStorage.setItem(EMAIL_KEY, currentEmail);
+    setLoggedInState(currentEmail);
+  } catch {
+    loginError.textContent = "Could not reach the server. Please try again.";
+  } finally {
+    loginEmailInput.disabled = false;
+    loginPasswordInput.disabled = false;
+  }
+});
+
+logoutButton.addEventListener("click", async () => {
+  if (accessToken) {
+    try {
+      await fetch("/api/logout", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+        },
+      });
+    } catch {
+      // ignore network logout failures in demo
+    }
+  }
+  setLoggedOutState();
+});
+
 chatForm.addEventListener("submit", async (event) => {
   event.preventDefault();
 
   const message = userMessageInput.value.trim();
-  if (!message) return;
+  if (!message || !accessToken) return;
 
   appendMessage("user", message);
   userMessageInput.value = "";
@@ -54,9 +161,19 @@ chatForm.addEventListener("submit", async (event) => {
 
     const res = await fetch("/api/chat", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${accessToken}`,
+      },
       body: JSON.stringify(payload),
     });
+
+    if (res.status === 401) {
+      removeThinkingBubble(thinkingEl);
+      appendMessage("assistant", "Your session expired. Please log in again.");
+      setLoggedOutState();
+      return;
+    }
 
     if (!res.ok) {
       removeThinkingBubble(thinkingEl);
@@ -68,7 +185,7 @@ chatForm.addEventListener("submit", async (event) => {
     conversationId = data.conversation_id;
     removeThinkingBubble(thinkingEl);
     appendMessage("assistant", data.assistant_reply);
-  } catch (err) {
+  } catch {
     removeThinkingBubble(thinkingEl);
     appendMessage("assistant", "I couldn't reach the backend right now.");
   } finally {
@@ -78,7 +195,17 @@ chatForm.addEventListener("submit", async (event) => {
   }
 });
 
-appendMessage(
-  "assistant",
-  "Hi. What can I help you figure out?"
-);
+async function bootstrap() {
+  if (!accessToken) {
+    setLoggedOutState();
+    return;
+  }
+  const ok = await fetchMe();
+  if (!ok) {
+    setLoggedOutState();
+    return;
+  }
+  setLoggedInState(currentEmail);
+}
+
+bootstrap();
