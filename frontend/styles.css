@@ -136,6 +136,10 @@ h1 {
   cursor: pointer;
 }
 
+.logout-btn.hidden {
+  display: none;
+}
+
 .chat-messages {
   min-height: 58vh;
   max-height: 66vh;

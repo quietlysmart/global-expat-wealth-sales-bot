@@ -18,6 +18,7 @@ const EMAIL_KEY = "gew_sales_user_email";
 let conversationId = null;
 let accessToken = localStorage.getItem(TOKEN_KEY) || "";
 let currentEmail = localStorage.getItem(EMAIL_KEY) || "";
+let authRequired = true;
 
 function appendMessage(role, text) {
   const el = document.createElement("div");
@@ -59,6 +60,17 @@ function setLoggedInState(email) {
   loginPanel.classList.add("hidden");
   chatPanel.classList.remove("hidden");
   userBadge.textContent = currentEmail;
+  if (!chatMessages.childElementCount) {
+    appendMessage("assistant", "Hi. What can I help you figure out?");
+  }
+}
+
+function setPublicDemoState() {
+  authRequired = false;
+  loginPanel.classList.add("hidden");
+  chatPanel.classList.remove("hidden");
+  userBadge.textContent = "Public demo mode";
+  logoutButton.classList.add("hidden");
   if (!chatMessages.childElementCount) {
     appendMessage("assistant", "Hi. What can I help you figure out?");
   }
@@ -120,6 +132,7 @@ loginForm.addEventListener("submit", async (event) => {
 });
 
 logoutButton.addEventListener("click", async () => {
+  if (!authRequired) return;
   if (accessToken) {
     try {
       await fetch("/api/logout", {
@@ -139,7 +152,8 @@ chatForm.addEventListener("submit", async (event) => {
   event.preventDefault();
 
   const message = userMessageInput.value.trim();
-  if (!message || !accessToken) return;
+  if (!message) return;
+  if (authRequired && !accessToken) return;
 
   appendMessage("user", message);
   userMessageInput.value = "";
@@ -163,7 +177,7 @@ chatForm.addEventListener("submit", async (event) => {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${accessToken}`,
+        ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
       },
       body: JSON.stringify(payload),
     });
@@ -196,7 +210,21 @@ chatForm.addEventListener("submit", async (event) => {
 });
 
 async function bootstrap() {
-  if (!accessToken) {
+  try {
+    const health = await fetch("/health");
+    if (health.ok) {
+      const h = await health.json();
+      authRequired = Boolean(h.auth_required);
+      if (!authRequired) {
+        setPublicDemoState();
+        return;
+      }
+    }
+  } catch {
+    // ignore health probe failures and continue with auth flow
+  }
+
+  if (!accessToken && authRequired) {
     setLoggedOutState();
     return;
   }
