@@ -1,6 +1,7 @@
 const chatForm = document.getElementById("chatForm");
 const userMessageInput = document.getElementById("userMessage");
 const chatMessages = document.getElementById("chatMessages");
+const sendButton = chatForm.querySelector("button");
 
 let conversationId = null;
 
@@ -12,6 +13,21 @@ function appendMessage(role, text) {
   chatMessages.scrollTop = chatMessages.scrollHeight;
 }
 
+function showThinkingBubble() {
+  const el = document.createElement("div");
+  el.className = "msg assistant thinking";
+  el.innerHTML = `<span class="dot"></span><span class="dot"></span><span class="dot"></span>`;
+  chatMessages.appendChild(el);
+  chatMessages.scrollTop = chatMessages.scrollHeight;
+  return el;
+}
+
+function removeThinkingBubble(el) {
+  if (el && el.parentNode) {
+    el.parentNode.removeChild(el);
+  }
+}
+
 chatForm.addEventListener("submit", async (event) => {
   event.preventDefault();
 
@@ -20,6 +36,9 @@ chatForm.addEventListener("submit", async (event) => {
 
   appendMessage("user", message);
   userMessageInput.value = "";
+  userMessageInput.disabled = true;
+  sendButton.disabled = true;
+  const thinkingEl = showThinkingBubble();
 
   try {
     const payload = {
@@ -40,15 +59,22 @@ chatForm.addEventListener("submit", async (event) => {
     });
 
     if (!res.ok) {
+      removeThinkingBubble(thinkingEl);
       appendMessage("assistant", "I hit a temporary issue. Please try again.");
       return;
     }
 
     const data = await res.json();
     conversationId = data.conversation_id;
+    removeThinkingBubble(thinkingEl);
     appendMessage("assistant", data.assistant_reply);
   } catch (err) {
+    removeThinkingBubble(thinkingEl);
     appendMessage("assistant", "I couldn't reach the backend right now.");
+  } finally {
+    userMessageInput.disabled = false;
+    sendButton.disabled = false;
+    userMessageInput.focus();
   }
 });
 

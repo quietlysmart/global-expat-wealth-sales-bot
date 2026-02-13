@@ -50,9 +50,18 @@ class OptionalLLM:
             "You are a conversation planner for a sales concierge bot.\n"
             "Return JSON only.\n"
             "Focus on natural pacing. Helpful first. Ask at most one question.\n"
+            "If the user just answered the previous question, usually advance to the next best question.\n"
+            "Do not use repetitive acknowledgements like 'Yes, we can help' every turn.\n"
+            "Treat the user's latest message as the top priority and answer it directly.\n"
+            "Avoid brochure language and avoid listing multiple services unless asked.\n"
+            "Write simple plain English suitable for a smart 16-year-old.\n"
+            "Most turns should be a few sentences, not a long block.\n"
+            "After giving real help, guide naturally toward a call with Dan when user asks for next steps or seems stuck.\n"
+            "Prefer soft CTA first; use hard CTA only when constraints allow.\n"
             "Do not ask for slots already answered.\n"
             "Do not use robotic lead-ins.\n"
             "Use progressive qualification naturally.\n"
+            "Question text must be exactly one sentence.\n"
         )
 
         user_prompt = f"""
@@ -73,6 +82,7 @@ Constraints:
 
 Return strict JSON:
 {{
+  "answer": "2-5 natural sentences answering the latest user message (no question marks)",
   "intent": "greeting|faq|qualify|objection|booking|other",
   "ack": "short acknowledgement",
   "value": ["1-3 helpful points"],
@@ -110,22 +120,25 @@ Return strict JSON:
   "verbosity": "short|expanded"
 }}
 """
-        try:
-            logger.info("planner_model=%s", self.settings.openai_model)
-            response = self.client.responses.create(
-                model=self.settings.openai_model,
-                input=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-                max_output_tokens=700,
-            )
-            payload = self._extract_json(response.output_text)
-            if not payload:
-                return None
-            return self._normalize_plan(payload)
-        except Exception:
-            return None
+        for model in self._candidate_models():
+            try:
+                logger.info("planner_model=%s", model)
+                response = self.client.responses.create(
+                    model=model,
+                    input=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    max_output_tokens=700,
+                )
+                payload = self._extract_json(response.output_text)
+                if not payload:
+                    continue
+                return self._normalize_plan(payload)
+            except Exception as exc:
+                logger.warning("planner_call_failed model=%s error=%s", model, exc)
+                continue
+        return None
 
     def write_turn(
         self,
@@ -143,6 +156,10 @@ Return strict JSON:
             "Write the final assistant reply for chat.\n"
             "Natural, friendly, calm. 2-6 short sentences by default.\n"
             "Use line breaks. No corporate dump. No robotic framing.\n"
+            "Avoid repeating sentence starters from the previous assistant turn.\n"
+            "Respond to what the user just said before anything else.\n"
+            "Do not use generic filler like 'we can help' or capability lists.\n"
+            "Use concrete, practical wording tied to known user details from plan.\n"
             "If plan says include link, include it exactly once.\n"
             "If plan has a question, include only that one question.\n"
         )
@@ -156,24 +173,36 @@ Recent turns:
 Approved plan JSON:
 {json.dumps(approved_plan, ensure_ascii=False)}
 """
-        try:
-            logger.info("writer_model=%s", self.settings.openai_model)
-            response = self.client.responses.create(
-                model=self.settings.openai_model,
-                input=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-                max_output_tokens=500,
-            )
-            text = (response.output_text or "").strip()
-            return re.sub(r"\n{3,}", "\n\n", text).strip() if text else None
-        except Exception:
-            return None
+        for model in self._candidate_models():
+            try:
+                logger.info("writer_model=%s", model)
+                response = self.client.responses.create(
+                    model=model,
+                    input=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    max_output_tokens=500,
+                )
+                text = (response.output_text or "").strip()
+                if text:
+                    return re.sub(r"\n{3,}", "\n\n", text).strip()
+            except Exception as exc:
+                logger.warning("writer_call_failed model=%s error=%s", model, exc)
+                continue
+        return None
+
+    def _candidate_models(self) -> list[str]:
+        models = [self.settings.openai_model]
+        for fallback in ["gpt-5-mini", "gpt-4.1-mini"]:
+            if fallback not in models:
+                models.append(fallback)
+        return models
 
     @staticmethod
     def _normalize_plan(payload: dict[str, Any]) -> dict[str, Any]:
         out = dict(payload)
+        out.setdefault("answer", "")
         out.setdefault("intent", "other")
         out.setdefault("ack", "")
         out.setdefault("value", [])
@@ -187,6 +216,7 @@ Approved plan JSON:
         if not isinstance(out["value"], list):
             out["value"] = []
         out["value"] = [str(v).strip() for v in out["value"] if str(v).strip()][:3]
+        out["answer"] = str(out.get("answer", "")).strip()
 
         nq = out.get("next_question")
         if not isinstance(nq, dict):

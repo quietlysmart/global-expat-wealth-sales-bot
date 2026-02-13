@@ -124,3 +124,18 @@ def test_live_reply_policy_no_more_than_one_question(tmp_path: Path) -> None:
 
     assert resp.assistant_reply.count("?") <= 1
     assert "\n\n" in resp.assistant_reply
+
+
+def test_finalize_repairs_clipped_tail_fragments(tmp_path: Path) -> None:
+    orchestrator = _build_stack(tmp_path)
+    out = orchestrator._finalize_writer_message(
+        text="Having around $50k gives you a solid base to start investing. We can look at what mix.",
+        include_booking_link=False,
+        allow_expanded=False,
+        expected_question=None,
+        user_message="around 50k us",
+        soft_cta_line=None,
+    )
+    lower = out.lower()
+    assert "what mix." not in lower
+    assert not lower.endswith(" we.")

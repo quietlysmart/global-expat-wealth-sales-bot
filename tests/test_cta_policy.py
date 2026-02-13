@@ -114,3 +114,17 @@ def test_case_5_hard_cta_cooldown(tmp_path: Path) -> None:
 
     r4 = _chat(orchestrator, "Can you send the booking link again?", c_id)
     assert _has_link(r4.assistant_reply)
+
+
+def test_case_6_what_do_i_do_prompts_next_step_cta(tmp_path: Path) -> None:
+    orchestrator = _build_stack(tmp_path)
+    c_id = None
+
+    r1 = _chat(orchestrator, "I live in Thailand and want to retire in 10 years.", c_id)
+    c_id = r1.conversation_id
+    r2 = _chat(orchestrator, "I have about 40k saved already.", c_id)
+    r3 = _chat(orchestrator, "ok so what do i do?", c_id)
+
+    assert not _has_link(r1.assistant_reply)
+    assert not _has_link(r2.assistant_reply)
+    assert _has_link(r3.assistant_reply)

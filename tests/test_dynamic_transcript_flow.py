@@ -83,3 +83,43 @@ def test_dynamic_transcript_does_not_repeat_or_over_question(tmp_path: Path) -> 
     soft_cta_count = sum(1 for reply in lower_replies if any(marker in reply for marker in soft_cta_markers))
     assert soft_cta_count <= 1
 
+
+def test_move_transcript_advances_after_short_country_answer(tmp_path: Path) -> None:
+    orchestrator = _build_stack(tmp_path)
+    conversation_id = None
+
+    r1 = _chat(orchestrator, "im planning to move to thailand", conversation_id)
+    conversation_id = r1.conversation_id
+    r2 = _chat(orchestrator, "uk", conversation_id)
+    r3 = _chat(orchestrator, "cool.", conversation_id)
+    r4 = _chat(orchestrator, "retirement", conversation_id)
+
+    replies = [r1.assistant_reply.lower(), r2.assistant_reply.lower(), r3.assistant_reply.lower(), r4.assistant_reply.lower()]
+
+    # After a short country answer, the bot should move forward to the next qualifier.
+    assert "what are you mainly trying to do - retirement, investing a lump sum, or something else?" in replies[1]
+    assert "where do you live right now?" not in replies[1]
+
+    # Avoid repetitive canned filler.
+    assert sum("yes, we can help" in reply for reply in replies) <= 1
+    assert sum("we can build from that" in reply for reply in replies) == 0
+
+    # Conversation should continue progressing.
+    assert "when do you want to get this sorted - soon, this year, or later?" in replies[3]
+
+
+def test_question_sentence_is_clean_single_sentence(tmp_path: Path) -> None:
+    orchestrator = _build_stack(tmp_path)
+    out = orchestrator._finalize_writer_message(
+        text=(
+            "Here are a few practical steps to start with retirement saving.\n\n"
+            "Which country are you based in. This helps me provide advice tailored to your location?"
+        ),
+        include_booking_link=False,
+        allow_expanded=False,
+        expected_question="Which country are you based in. This helps me provide advice tailored to your location?",
+        user_message="how to save for retirement",
+    )
+    assert out.count("?") == 1
+    assert "which country are you based in?" in out.lower()
+    assert "this helps me provide advice tailored to your location?" not in out.lower()
