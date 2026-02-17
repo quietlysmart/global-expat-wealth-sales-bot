@@ -226,13 +226,13 @@ Approved plan JSON:
                     self.last_transcription_error = ""
                     return text
             except Exception as exc:
-                self.last_transcription_error = f"sdk:{type(exc).__name__}:{exc}"
+                self.last_transcription_error = f"sdk:{type(exc).__name__}"
                 logger.warning(
-                    "transcription_call_failed model=%s content_type=%s bytes=%s error=%s",
+                    "transcription_call_failed model=%s content_type=%s bytes=%s error_type=%s",
                     model,
                     content_type,
                     len(audio_bytes),
-                    exc,
+                    type(exc).__name__,
                 )
                 continue
 
@@ -249,13 +249,13 @@ Approved plan JSON:
                     self.last_transcription_error = ""
                     return text
             except Exception as exc:
-                self.last_transcription_error = f"http:{type(exc).__name__}:{exc}"
+                self.last_transcription_error = f"http:{type(exc).__name__}"
                 logger.warning(
-                    "transcription_http_fallback_failed model=%s content_type=%s bytes=%s error=%s",
+                    "transcription_http_fallback_failed model=%s content_type=%s bytes=%s error_type=%s",
                     model,
                     content_type,
                     len(audio_bytes),
-                    exc,
+                    type(exc).__name__,
                 )
                 continue
         if not self.last_transcription_error:
