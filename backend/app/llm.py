@@ -19,6 +19,7 @@ class OptionalLLM:
         self.enabled = False
         self.disabled_reason = ""
         self.client = None
+        self.last_transcription_error = ""
 
         if not settings.use_openai_chat:
             self.disabled_reason = "disabled_by_config"
@@ -200,7 +201,9 @@ Approved plan JSON:
         content_type: str | None = None,
     ) -> str | None:
         if not self.enabled or not self.client or not audio_bytes:
+            self.last_transcription_error = "llm_not_enabled_or_empty_audio"
             return None
+        self.last_transcription_error = ""
         tried: list[str] = []
         had_success_response = False
         for model in [
@@ -220,8 +223,10 @@ Approved plan JSON:
                 had_success_response = True
                 text = (getattr(response, "text", "") or "").strip()
                 if text:
+                    self.last_transcription_error = ""
                     return text
             except Exception as exc:
+                self.last_transcription_error = f"sdk:{type(exc).__name__}:{exc}"
                 logger.warning(
                     "transcription_call_failed model=%s content_type=%s bytes=%s error=%s",
                     model,
@@ -241,8 +246,10 @@ Approved plan JSON:
                     content_type=content_type,
                 )
                 if text is not None:
+                    self.last_transcription_error = ""
                     return text
             except Exception as exc:
+                self.last_transcription_error = f"http:{type(exc).__name__}:{exc}"
                 logger.warning(
                     "transcription_http_fallback_failed model=%s content_type=%s bytes=%s error=%s",
                     model,
@@ -251,6 +258,8 @@ Approved plan JSON:
                     exc,
                 )
                 continue
+        if not self.last_transcription_error:
+            self.last_transcription_error = "no_transcription_result"
         return "" if had_success_response else None
 
     def _candidate_models(self) -> list[str]:
@@ -343,6 +352,13 @@ Approved plan JSON:
             files=files,
             data=data,
             timeout=45,
+        )
+        logger.info(
+            "transcription_http_response model=%s status=%s bytes=%s content_type=%s",
+            model,
+            resp.status_code,
+            len(audio_bytes),
+            content_type,
         )
         if resp.status_code >= 500:
             return None

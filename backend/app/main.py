@@ -129,7 +129,10 @@ async def transcribe_endpoint(
         content_type=audio.content_type,
     )
     if text is None:
-        raise HTTPException(status_code=502, detail="could not transcribe audio")
+        detail = "could not transcribe audio"
+        if chat.llm.last_transcription_error:
+            detail = f"{detail}: {chat.llm.last_transcription_error[:160]}"
+        raise HTTPException(status_code=502, detail=detail)
     return TranscribeResponse(text=text)
 
 
