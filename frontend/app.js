@@ -33,8 +33,8 @@ const isIOS =
   /iPad|iPhone|iPod/.test(navigator.userAgent) ||
   (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
 const SpeechRecognitionCtor = window.SpeechRecognition || window.webkitSpeechRecognition;
-// Safari iOS speech recognition is inconsistent for press/hold UX; use recorder path there.
-const supportsSpeechRecognition = Boolean(SpeechRecognitionCtor) && window.isSecureContext && !isIOS;
+// Keep microphone behavior consistent everywhere: press/hold and release to send.
+const supportsSpeechRecognition = false && Boolean(SpeechRecognitionCtor) && window.isSecureContext && !isIOS;
 let speechRecognition = null;
 let speechSessionActive = false;
 let speechFinalText = "";
@@ -572,6 +572,10 @@ voiceRecordButton.addEventListener(
 );
 
 voiceRecordButton.addEventListener("contextmenu", (event) => {
+  event.preventDefault();
+});
+
+voiceRecordButton.addEventListener("click", (event) => {
   event.preventDefault();
 });
 

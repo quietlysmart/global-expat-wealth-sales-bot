@@ -317,8 +317,8 @@ body {
   }
 
   .chat-messages {
-    min-height: 62vh;
-    max-height: 68vh;
+    min-height: calc(62vh - 100px);
+    max-height: calc(68vh - 100px);
   }
 
   .chat-form {
@@ -330,8 +330,8 @@ body {
 
   .chat-form input {
     min-width: 0;
-    width: calc(100% - 50px);
-    max-width: calc(100% - 50px);
+    width: calc(100% - 150px);
+    max-width: calc(100% - 150px);
     font-size: 16px;
     padding: 11px 10px;
   }
