@@ -24,6 +24,10 @@ class Settings(BaseSettings):
 
     openai_api_key: str = Field(default="", alias="OPENAI_API_KEY")
     openai_model: str = Field(default="gpt-5-mini", alias="OPENAI_MODEL")
+    openai_transcription_model: str = Field(
+        default="gpt-4o-mini-transcribe",
+        alias="OPENAI_TRANSCRIPTION_MODEL",
+    )
     use_openai_chat: bool = Field(default=True, alias="USE_OPENAI_CHAT")
     auth_required: bool = Field(default=True, alias="AUTH_REQUIRED")
     auth_session_ttl_hours: int = Field(default=24, alias="AUTH_SESSION_TTL_HOURS")

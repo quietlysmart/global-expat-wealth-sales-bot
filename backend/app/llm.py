@@ -192,6 +192,28 @@ Approved plan JSON:
                 continue
         return None
 
+    def transcribe_audio(
+        self,
+        audio_bytes: bytes,
+        filename: str = "voice_input.webm",
+        content_type: str | None = None,
+    ) -> str | None:
+        if not self.enabled or not self.client or not audio_bytes:
+            return None
+        for model in [self.settings.openai_transcription_model, "gpt-4o-mini-transcribe"]:
+            try:
+                response = self.client.audio.transcriptions.create(
+                    model=model,
+                    file=(filename, audio_bytes, content_type or "application/octet-stream"),
+                )
+                text = (getattr(response, "text", "") or "").strip()
+                if text:
+                    return text
+            except Exception as exc:
+                logger.warning("transcription_call_failed model=%s error=%s", model, exc)
+                continue
+        return None
+
     def _candidate_models(self) -> list[str]:
         models = [self.settings.openai_model]
         for fallback in ["gpt-5-mini", "gpt-4.1-mini"]:

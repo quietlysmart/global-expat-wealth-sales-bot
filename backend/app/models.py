@@ -164,3 +164,7 @@ class LogoutResponse(BaseModel):
 
 class CurrentUserResponse(BaseModel):
     email: str
+
+
+class TranscribeResponse(BaseModel):
+    text: str

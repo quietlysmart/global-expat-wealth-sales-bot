@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -21,6 +21,7 @@ from .models import (
     LoginResponse,
     LogoutResponse,
     ProspectProfile,
+    TranscribeResponse,
 )
 from .orchestrator import ChatOrchestrator
 
@@ -110,6 +111,26 @@ def chat_endpoint(
     if not payload.message.strip():
         raise HTTPException(status_code=400, detail="message is required")
     return chat.handle_chat(payload)
+
+
+@app.post("/api/transcribe", response_model=TranscribeResponse)
+async def transcribe_endpoint(
+    audio: UploadFile = File(...),
+    _: dict[str, Any] = Depends(require_authenticated_user),
+) -> TranscribeResponse:
+    if not chat.llm.enabled:
+        raise HTTPException(status_code=503, detail="voice transcription unavailable")
+    raw = await audio.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="audio is empty")
+    text = chat.llm.transcribe_audio(
+        raw,
+        filename=audio.filename or "voice_input.webm",
+        content_type=audio.content_type,
+    )
+    if not text:
+        raise HTTPException(status_code=502, detail="could not transcribe audio")
+    return TranscribeResponse(text=text)
 
 
 @app.post("/api/ingest", response_model=IngestResponse)

@@ -53,6 +53,8 @@ Channel-agnostic backend chatbot + demo web page for lead capture, objection han
   - Logo
   - Title: "Global Expat Wealth Sales Assistant"
   - Chat window only
+  - Voice input mic button (press and hold to record, release to stop/send)
+  - Mobile-safe touch behavior for iPhone long-press
 - Seed conversation test coverage for the 5 must-pass scenarios.
 
 ## Repo layout
@@ -88,6 +90,7 @@ Add your OpenAI key in `.env` for live AI inference:
 OPENAI_API_KEY=your_key_here
 USE_OPENAI_CHAT=true
 OPENAI_MODEL=gpt-5-mini
+OPENAI_TRANSCRIPTION_MODEL=gpt-4o-mini-transcribe
 AUTH_REQUIRED=true
 ```
 
@@ -120,6 +123,7 @@ uvicorn backend.app.main:app --host 0.0.0.0 --port 8000 --reload
 - http://localhost:8000/
 
 Log in with your created user on the login screen, then use the chat.
+For voice input, press and hold the mic button, then release to stop and transcribe.
 
 Check AI runtime status:
 
@@ -188,6 +192,9 @@ Response:
 
 ### `POST /api/ingest`
 Ingest PDF paths, website URL, and/or raw text via API.
+
+### `POST /api/transcribe`
+Accepts multipart audio upload (`audio` file field) and returns transcribed text.
 
 ### `GET /api/conversations/{id}/actions`
 Returns logged actions for the conversation.
