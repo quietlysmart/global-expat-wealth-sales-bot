@@ -3,12 +3,6 @@
   "builds": [
     { "src": "app.py", "use": "@vercel/python" }
   ],
-  "functions": {
-    "app.py": {
-      "regions": ["iad1"],
-      "maxDuration": 60
-    }
-  },
   "routes": [
     { "src": "/(.*)", "dest": "app.py" }
   ]
