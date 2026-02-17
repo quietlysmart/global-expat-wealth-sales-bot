@@ -29,6 +29,14 @@ let isRecording = false;
 let isProcessingVoice = false;
 let touchBlockMouseUntil = 0;
 
+const SpeechRecognitionCtor = window.SpeechRecognition || window.webkitSpeechRecognition;
+const supportsSpeechRecognition = Boolean(SpeechRecognitionCtor) && window.isSecureContext;
+let speechRecognition = null;
+let speechSessionActive = false;
+let speechFinalText = "";
+let speechInterimText = "";
+let speechErrorMessage = "";
+
 function appendMessage(role, text) {
   const el = document.createElement("div");
   el.className = `msg ${role}`;
@@ -108,7 +116,8 @@ function pickBestMimeType() {
 
 function extensionFromMimeType(type) {
   if (!type) return "webm";
-  if (type.includes("mp4") || type.includes("m4a")) return "m4a";
+  if (type.includes("video/mp4")) return "mp4";
+  if (type.includes("audio/mp4") || type.includes("m4a") || type.includes("mp4")) return "m4a";
   if (type.includes("ogg")) return "ogg";
   if (type.includes("wav")) return "wav";
   return "webm";
@@ -210,7 +219,10 @@ async function handleRecordingComplete(blob) {
     }
 
     if (!response.ok) {
-      appendMessage("assistant", "I couldn't process that recording. Please try again.");
+      appendMessage(
+        "assistant",
+        "Voice transcription is temporarily unavailable. Please type your message."
+      );
       return;
     }
 
@@ -231,8 +243,94 @@ async function handleRecordingComplete(blob) {
   }
 }
 
+function initSpeechRecognition() {
+  if (!supportsSpeechRecognition || speechRecognition) return;
+
+  speechRecognition = new SpeechRecognitionCtor();
+  speechRecognition.lang = navigator.language || "en-US";
+  speechRecognition.interimResults = true;
+  speechRecognition.continuous = true;
+
+  speechRecognition.onresult = (event) => {
+    let finalText = speechFinalText;
+    let interim = "";
+    for (let i = event.resultIndex; i < event.results.length; i += 1) {
+      const segment = event.results[i][0]?.transcript || "";
+      if (event.results[i].isFinal) {
+        finalText += `${segment} `;
+      } else {
+        interim += segment;
+      }
+    }
+    speechFinalText = finalText.trim();
+    speechInterimText = interim.trim();
+  };
+
+  speechRecognition.onerror = (event) => {
+    if (event.error === "not-allowed" || event.error === "service-not-allowed") {
+      speechErrorMessage = "I couldn't access your microphone. Please check permissions and try again.";
+      return;
+    }
+    if (event.error === "no-speech" || event.error === "audio-capture") {
+      speechErrorMessage = "I couldn't hear anything. Please try again.";
+      return;
+    }
+    speechErrorMessage = "Voice input is temporarily unavailable. Please type your message.";
+  };
+
+  speechRecognition.onend = () => {
+    if (!speechSessionActive) return;
+    speechSessionActive = false;
+
+    const transcript = `${speechFinalText} ${speechInterimText}`.trim();
+    const err = speechErrorMessage;
+
+    speechFinalText = "";
+    speechInterimText = "";
+    speechErrorMessage = "";
+
+    if (err) {
+      appendMessage("assistant", err);
+      return;
+    }
+    if (!transcript) {
+      appendMessage("assistant", "I couldn't catch that. Please try recording again.");
+      return;
+    }
+
+    void sendChatMessage(transcript);
+  };
+}
+
+async function startSpeechRecognitionRecording() {
+  initSpeechRecognition();
+  if (!speechRecognition) return false;
+
+  speechSessionActive = true;
+  speechFinalText = "";
+  speechInterimText = "";
+  speechErrorMessage = "";
+
+  try {
+    speechRecognition.start();
+    isRecording = true;
+    setVoiceVisualState();
+    return true;
+  } catch {
+    speechSessionActive = false;
+    return false;
+  }
+}
+
 async function startRecording() {
   if (isRecording || isProcessingVoice || requestInFlight) return;
+
+  if (supportsSpeechRecognition) {
+    const speechStarted = await startSpeechRecognitionRecording();
+    if (speechStarted) {
+      return;
+    }
+  }
 
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || !window.MediaRecorder) {
     appendMessage("assistant", "Voice recording isn't supported on this browser.");
@@ -276,6 +374,15 @@ function stopRecording() {
   isRecording = false;
   setVoiceVisualState();
 
+  if (speechRecognition && speechSessionActive) {
+    try {
+      speechRecognition.stop();
+    } catch {
+      speechSessionActive = false;
+    }
+    return;
+  }
+
   if (!mediaRecorder || mediaRecorder.state === "inactive") {
     clearRecorderState();
     return;
@@ -296,6 +403,17 @@ function setLoggedOutState() {
   loginPasswordInput.value = "";
   isRecording = false;
   isProcessingVoice = false;
+  speechSessionActive = false;
+  speechFinalText = "";
+  speechInterimText = "";
+  speechErrorMessage = "";
+  if (speechRecognition) {
+    try {
+      speechRecognition.stop();
+    } catch {
+      // ignore
+    }
+  }
   clearRecorderState();
   setVoiceVisualState();
 }
@@ -367,7 +485,6 @@ loginForm.addEventListener("submit", async (event) => {
 });
 
 logoutButton.addEventListener("click", async () => {
-  if (!authRequired) return;
   if (accessToken) {
     try {
       await fetch("/api/logout", {

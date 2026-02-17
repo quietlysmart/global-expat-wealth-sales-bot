@@ -4,13 +4,16 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Global Expat Wealth Sales Assistant</title>
-    <link rel="stylesheet" href="/frontend/styles.css" />
+    <link rel="stylesheet" href="/frontend/styles.css?v=20260217d" />
   </head>
   <body>
     <main class="app-shell">
-      <section id="loginPanel" class="auth-panel" aria-label="Login">
-        <img src="/frontend/assets/logo.png" alt="Global Expat Wealth" class="logo" />
+      <header class="app-header">
+        <img src="/frontend/assets/logo.png" alt="Global Expat Wealth" class="app-header-logo" />
         <h1>Global Expat Wealth Sales Assistant</h1>
+      </header>
+
+      <section id="loginPanel" class="auth-panel" aria-label="Login">
         <p class="auth-subtitle">
           AI concierge for qualifying prospects, handling objections, and guiding conversations toward a call with Dan.
         </p>
@@ -26,10 +29,6 @@
       </section>
 
       <section id="chatPanel" class="chat-panel hidden" aria-label="Chat">
-        <div class="chat-brand">
-          <img src="/frontend/assets/logo.png" alt="Global Expat Wealth" class="chat-logo" />
-          <h2>Global Expat Wealth Sales Assistant</h2>
-        </div>
         <div class="chat-topbar">
           <div id="userBadge" class="user-badge"></div>
           <button id="logoutButton" class="logout-btn" type="button">Log out</button>
@@ -53,6 +52,6 @@
       </section>
     </main>
 
-    <script src="/frontend/app.js"></script>
+    <script src="/frontend/app.js?v=20260217d"></script>
   </body>
 </html>

@@ -35,17 +35,22 @@ body {
   display: none !important;
 }
 
-.logo {
+.app-header {
+  width: 100%;
+  text-align: center;
+}
+
+.app-header-logo {
   width: 280px;
   max-width: 72vw;
   height: auto;
 }
 
-h1 {
-  margin: 0;
+.app-header h1 {
+  margin: 6px 0 0;
   font-family: "Cormorant Garamond", "Times New Roman", serif;
-  font-size: clamp(1.9rem, 3.2vw, 2.8rem);
-  letter-spacing: 0.3px;
+  font-size: clamp(1.7rem, 3vw, 2.4rem);
+  letter-spacing: 0.2px;
   text-align: center;
 }
 
@@ -119,26 +124,6 @@ h1 {
   display: flex;
   align-items: center;
   justify-content: space-between;
-}
-
-.chat-brand {
-  padding: 14px 12px 10px;
-  border-bottom: 1px solid var(--border);
-  background: #ffffff;
-  text-align: center;
-}
-
-.chat-logo {
-  width: 190px;
-  max-width: 70vw;
-  height: auto;
-}
-
-.chat-brand h2 {
-  margin: 6px 0 0;
-  font-family: "Cormorant Garamond", "Times New Roman", serif;
-  font-size: clamp(1.1rem, 2.4vw, 1.5rem);
-  font-weight: 600;
 }
 
 .user-badge {
@@ -327,7 +312,7 @@ h1 {
     margin: 16px auto;
   }
 
-  .logo {
+  .app-header-logo {
     width: 220px;
   }
 
