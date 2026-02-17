@@ -201,6 +201,7 @@ Approved plan JSON:
         if not self.enabled or not self.client or not audio_bytes:
             return None
         tried: list[str] = []
+        had_success_response = False
         for model in [
             self.settings.openai_transcription_model,
             "gpt-4o-mini-transcribe",
@@ -215,6 +216,7 @@ Approved plan JSON:
                     # Let OpenAI infer file metadata from filename when possible.
                     file=(filename, audio_bytes),
                 )
+                had_success_response = True
                 text = (getattr(response, "text", "") or "").strip()
                 if text:
                     return text
@@ -227,7 +229,7 @@ Approved plan JSON:
                     exc,
                 )
                 continue
-        return None
+        return "" if had_success_response else None
 
     def _candidate_models(self) -> list[str]:
         models = [self.settings.openai_model]

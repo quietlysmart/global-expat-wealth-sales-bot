@@ -58,3 +58,22 @@ def test_transcribe_returns_text(monkeypatch) -> None:
 
     assert response.status_code == 200
     assert response.json()["text"] == "hello from voice"
+
+
+def test_transcribe_allows_empty_text_when_audio_is_unclear(monkeypatch) -> None:
+    monkeypatch.setattr(main_module.settings, "auth_required", False)
+    monkeypatch.setattr(main_module.chat.llm, "enabled", True)
+
+    def _fake_transcribe(raw: bytes, filename: str, content_type: str | None) -> str:
+        assert raw
+        return ""
+
+    monkeypatch.setattr(main_module.chat.llm, "transcribe_audio", _fake_transcribe)
+
+    response = client.post(
+        "/api/transcribe",
+        files={"audio": ("voice.webm", b"abc", "audio/webm")},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["text"] == ""

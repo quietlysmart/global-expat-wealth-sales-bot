@@ -128,7 +128,7 @@ async def transcribe_endpoint(
         filename=audio.filename or "voice_input.webm",
         content_type=audio.content_type,
     )
-    if not text:
+    if text is None:
         raise HTTPException(status_code=502, detail="could not transcribe audio")
     return TranscribeResponse(text=text)
 
