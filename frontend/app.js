@@ -29,8 +29,12 @@ let isRecording = false;
 let isProcessingVoice = false;
 let touchBlockMouseUntil = 0;
 
+const isIOS =
+  /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+  (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
 const SpeechRecognitionCtor = window.SpeechRecognition || window.webkitSpeechRecognition;
-const supportsSpeechRecognition = Boolean(SpeechRecognitionCtor) && window.isSecureContext;
+// Safari iOS speech recognition is inconsistent for press/hold UX; use recorder path there.
+const supportsSpeechRecognition = Boolean(SpeechRecognitionCtor) && window.isSecureContext && !isIOS;
 let speechRecognition = null;
 let speechSessionActive = false;
 let speechFinalText = "";
@@ -98,11 +102,7 @@ function pickBestMimeType() {
     return "";
   }
 
-  const isiOS =
-    /iPad|iPhone|iPod/.test(navigator.userAgent) ||
-    (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
-
-  const candidates = isiOS
+  const candidates = isIOS
     ? ["audio/mp4", "audio/webm;codecs=opus", "audio/webm", "audio/ogg;codecs=opus", "audio/ogg"]
     : ["audio/webm;codecs=opus", "audio/mp4", "audio/webm", "audio/ogg;codecs=opus", "audio/ogg"];
 
@@ -115,9 +115,9 @@ function pickBestMimeType() {
 }
 
 function extensionFromMimeType(type) {
-  if (!type) return "webm";
+  if (!type) return isIOS ? "m4a" : "webm";
   if (type.includes("video/mp4")) return "mp4";
-  if (type.includes("audio/mp4") || type.includes("m4a") || type.includes("mp4")) return "m4a";
+  if (type.includes("audio/mp4") || type.includes("m4a") || type.includes("x-m4a") || type.includes("aac")) return "m4a";
   if (type.includes("ogg")) return "ogg";
   if (type.includes("wav")) return "wav";
   return "webm";
@@ -353,7 +353,10 @@ async function startRecording() {
 
     mediaRecorder.onstop = async () => {
       const fallbackType =
-        mediaRecorder?.mimeType || recordingChunks[0]?.type || mimeType || "audio/webm";
+        mediaRecorder?.mimeType ||
+        recordingChunks[0]?.type ||
+        mimeType ||
+        (isIOS ? "audio/mp4" : "audio/webm");
       const blob = new Blob(recordingChunks, { type: fallbackType });
       clearRecorderState();
       await handleRecordingComplete(blob);
