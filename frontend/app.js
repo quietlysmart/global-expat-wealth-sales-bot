@@ -19,7 +19,7 @@ const EMAIL_KEY = "gew_sales_user_email";
 let conversationId = null;
 let accessToken = localStorage.getItem(TOKEN_KEY) || "";
 let currentEmail = localStorage.getItem(EMAIL_KEY) || "";
-let authRequired = true;
+const authRequired = true;
 let requestInFlight = false;
 
 let mediaRecorder = null;
@@ -311,18 +311,6 @@ function setLoggedInState(email) {
   setVoiceVisualState();
 }
 
-function setPublicDemoState() {
-  authRequired = false;
-  loginPanel.classList.add("hidden");
-  chatPanel.classList.remove("hidden");
-  userBadge.textContent = "Public demo mode";
-  logoutButton.classList.add("hidden");
-  if (!chatMessages.childElementCount) {
-    appendMessage("assistant", "Hi. What can I help you figure out?");
-  }
-  setVoiceVisualState();
-}
-
 async function fetchMe() {
   if (!accessToken) return false;
   try {
@@ -457,21 +445,7 @@ voiceRecordButton.addEventListener("contextmenu", (event) => {
 });
 
 async function bootstrap() {
-  try {
-    const health = await fetch("/health");
-    if (health.ok) {
-      const h = await health.json();
-      authRequired = Boolean(h.auth_required);
-      if (!authRequired) {
-        setPublicDemoState();
-        return;
-      }
-    }
-  } catch {
-    // ignore health probe failures and continue with auth flow
-  }
-
-  if (!accessToken && authRequired) {
+  if (!accessToken) {
     setLoggedOutState();
     return;
   }
