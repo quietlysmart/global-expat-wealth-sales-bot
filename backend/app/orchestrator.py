@@ -1169,6 +1169,7 @@ class ChatOrchestrator:
 
         out = self._apply_buzzword_replacements(out)
         out = self._apply_compliance_language_guardrails(out)
+        out = self._apply_identity_guardrails(out, user_message)
         out = self._fix_sentence_casing(out)
         out = re.sub(r"\n{3,}", "\n\n", out).strip()
         if include_booking_link:
@@ -1225,6 +1226,36 @@ class ChatOrchestrator:
         ]
         for pattern, repl in replacements:
             out = re.sub(pattern, repl, out)
+        return out
+
+    @staticmethod
+    def _apply_identity_guardrails(text: str, user_message: str) -> str:
+        out = text
+        out = re.sub(
+            r"(?i)\bi work for (a )?company\b",
+            "I support Dan Whiting at Global Expat Wealth",
+            out,
+        )
+        out = re.sub(
+            r"(?i)\bi work for\b",
+            "I support Dan Whiting at Global Expat Wealth",
+            out,
+        )
+        out = re.sub(
+            r"(?i)\bour advisers\b",
+            "Dan and the team",
+            out,
+        )
+        user_lower = (user_message or "").lower()
+        asks_identity = (
+            "who do you work for" in user_lower
+            or "who are you" in user_lower
+            or ("dan" in user_lower and "who" in user_lower)
+        )
+        if asks_identity and (
+            "dan whiting" not in out.lower() or "global expat wealth" not in out.lower()
+        ):
+            out = f"I support Dan Whiting at Global Expat Wealth.\n\n{out}".strip()
         return out
 
     @staticmethod

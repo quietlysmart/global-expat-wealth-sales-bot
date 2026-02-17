@@ -41,6 +41,15 @@ let speechFinalText = "";
 let speechInterimText = "";
 let speechErrorMessage = "";
 
+function scrollPageToTop() {
+  if ("scrollRestoration" in history) {
+    history.scrollRestoration = "manual";
+  }
+  window.scrollTo(0, 0);
+  document.documentElement.scrollTop = 0;
+  document.body.scrollTop = 0;
+}
+
 function appendMessage(role, text) {
   const el = document.createElement("div");
   el.className = `msg ${role}`;
@@ -419,6 +428,7 @@ function setLoggedOutState() {
   }
   clearRecorderState();
   setVoiceVisualState();
+  scrollPageToTop();
 }
 
 function setLoggedInState(email) {
@@ -430,6 +440,7 @@ function setLoggedInState(email) {
     appendMessage("assistant", "Hi. What can I help you figure out?");
   }
   setVoiceVisualState();
+  scrollPageToTop();
 }
 
 async function fetchMe() {
@@ -565,6 +576,7 @@ voiceRecordButton.addEventListener("contextmenu", (event) => {
 });
 
 async function bootstrap() {
+  scrollPageToTop();
   if (!accessToken) {
     setLoggedOutState();
     return;

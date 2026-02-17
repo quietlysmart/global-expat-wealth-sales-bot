@@ -309,7 +309,7 @@ body {
 @media (max-width: 700px) {
   .app-shell {
     width: 95vw;
-    margin: 16px auto;
+    margin: 10px auto 0;
   }
 
   .app-header-logo {
@@ -322,13 +322,16 @@ body {
   }
 
   .chat-form {
-    grid-template-columns: 1fr auto auto;
+    grid-template-columns: minmax(120px, calc(100% - 170px)) 44px 72px;
     gap: 8px;
-    padding: 10px;
+    padding: 10px calc(10px + env(safe-area-inset-right)) calc(12px + env(safe-area-inset-bottom))
+      calc(10px + env(safe-area-inset-left));
   }
 
   .chat-form input {
     min-width: 0;
+    width: calc(100% - 50px);
+    max-width: calc(100% - 50px);
     font-size: 16px;
     padding: 11px 10px;
   }
