@@ -121,6 +121,26 @@ h1 {
   justify-content: space-between;
 }
 
+.chat-brand {
+  padding: 14px 12px 10px;
+  border-bottom: 1px solid var(--border);
+  background: #ffffff;
+  text-align: center;
+}
+
+.chat-logo {
+  width: 190px;
+  max-width: 70vw;
+  height: auto;
+}
+
+.chat-brand h2 {
+  margin: 6px 0 0;
+  font-family: "Cormorant Garamond", "Times New Roman", serif;
+  font-size: clamp(1.1rem, 2.4vw, 1.5rem);
+  font-weight: 600;
+}
+
 .user-badge {
   font-size: 0.86rem;
   color: var(--muted);

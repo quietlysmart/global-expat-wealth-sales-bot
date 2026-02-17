@@ -90,13 +90,13 @@ function pickBestMimeType() {
     return "";
   }
 
-  const candidates = [
-    "audio/webm;codecs=opus",
-    "audio/mp4",
-    "audio/webm",
-    "audio/ogg;codecs=opus",
-    "audio/ogg",
-  ];
+  const isiOS =
+    /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+    (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+
+  const candidates = isiOS
+    ? ["audio/mp4", "audio/webm;codecs=opus", "audio/webm", "audio/ogg;codecs=opus", "audio/ogg"]
+    : ["audio/webm;codecs=opus", "audio/mp4", "audio/webm", "audio/ogg;codecs=opus", "audio/ogg"];
 
   for (const type of candidates) {
     if (window.MediaRecorder.isTypeSupported(type)) {
@@ -254,13 +254,14 @@ async function startRecording() {
     };
 
     mediaRecorder.onstop = async () => {
-      const fallbackType = recordingChunks[0]?.type || mimeType || "audio/webm";
+      const fallbackType =
+        mediaRecorder?.mimeType || recordingChunks[0]?.type || mimeType || "audio/webm";
       const blob = new Blob(recordingChunks, { type: fallbackType });
       clearRecorderState();
       await handleRecordingComplete(blob);
     };
 
-    mediaRecorder.start();
+    mediaRecorder.start(250);
     isRecording = true;
     setVoiceVisualState();
   } catch {

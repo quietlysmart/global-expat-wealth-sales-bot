@@ -200,17 +200,32 @@ Approved plan JSON:
     ) -> str | None:
         if not self.enabled or not self.client or not audio_bytes:
             return None
-        for model in [self.settings.openai_transcription_model, "gpt-4o-mini-transcribe"]:
+        tried: list[str] = []
+        for model in [
+            self.settings.openai_transcription_model,
+            "gpt-4o-mini-transcribe",
+            "whisper-1",
+        ]:
+            if model in tried:
+                continue
+            tried.append(model)
             try:
                 response = self.client.audio.transcriptions.create(
                     model=model,
-                    file=(filename, audio_bytes, content_type or "application/octet-stream"),
+                    # Let OpenAI infer file metadata from filename when possible.
+                    file=(filename, audio_bytes),
                 )
                 text = (getattr(response, "text", "") or "").strip()
                 if text:
                     return text
             except Exception as exc:
-                logger.warning("transcription_call_failed model=%s error=%s", model, exc)
+                logger.warning(
+                    "transcription_call_failed model=%s content_type=%s bytes=%s error=%s",
+                    model,
+                    content_type,
+                    len(audio_bytes),
+                    exc,
+                )
                 continue
         return None
 
