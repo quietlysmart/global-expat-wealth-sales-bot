@@ -5,6 +5,7 @@ import logging
 import re
 from typing import Any
 
+import requests
 from openai import OpenAI
 
 from .config import Settings
@@ -229,6 +230,27 @@ Approved plan JSON:
                     exc,
                 )
                 continue
+
+        # Fallback path using raw HTTP multipart request if SDK transport fails.
+        for model in tried:
+            try:
+                text = self._transcribe_with_http(
+                    model=model,
+                    audio_bytes=audio_bytes,
+                    filename=filename,
+                    content_type=content_type,
+                )
+                if text is not None:
+                    return text
+            except Exception as exc:
+                logger.warning(
+                    "transcription_http_fallback_failed model=%s content_type=%s bytes=%s error=%s",
+                    model,
+                    content_type,
+                    len(audio_bytes),
+                    exc,
+                )
+                continue
         return "" if had_success_response else None
 
     def _candidate_models(self) -> list[str]:
@@ -298,3 +320,40 @@ Approved plan JSON:
             return json.loads(match.group(0))
         except Exception:
             return None
+
+    def _transcribe_with_http(
+        self,
+        model: str,
+        audio_bytes: bytes,
+        filename: str,
+        content_type: str | None,
+    ) -> str | None:
+        headers = {
+            "Authorization": f"Bearer {self.settings.openai_api_key}",
+        }
+        files = {
+            "file": (filename, audio_bytes, content_type or "application/octet-stream"),
+        }
+        data = {
+            "model": model,
+        }
+        resp = requests.post(
+            "https://api.openai.com/v1/audio/transcriptions",
+            headers=headers,
+            files=files,
+            data=data,
+            timeout=45,
+        )
+        if resp.status_code >= 500:
+            return None
+        if resp.status_code >= 400:
+            logger.warning(
+                "transcription_http_bad_status model=%s status=%s body=%s",
+                model,
+                resp.status_code,
+                resp.text[:400],
+            )
+            return None
+        payload = resp.json()
+        text = str(payload.get("text", "")).strip()
+        return text
